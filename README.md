@@ -49,6 +49,7 @@ The repository now contains a working native macOS host for `CLIProxyAPIPlus` wi
 - `ProxyService` coordinating runtime launch, health checks, management API reads, and auth toggles
 - `RuntimeManager` handling bundled runtime installation, process start/stop, config generation, and in-memory runtime logs
 - dashboard sections for runtime state, packaged runtime binary, OAuth login, OAuth file list, and provider routing summary
+- OAuth cards that can show upstream model IDs and copy them directly from the native UI
 
 Current runtime layout:
 
@@ -66,13 +67,17 @@ Important behavior:
 - If the management API returns an empty auth list or the response cannot be interpreted, SurProxy falls back to scanning `~/.cli-proxy-api/*.json` directly so the UI does not collapse to an empty state.
 - SurProxy preserves existing provider configuration in its app-managed `config.yaml` and only upserts the runtime fields it must own.
 - SurProxy health checks now avoid sending `GET /v0/management/config` before `127.0.0.1:8787` is actually listening, which prevents noisy early `NSURLErrorDomain Code=-1004` failures during startup.
+- For models, SurProxy first uses `GET /v0/management/auth-files/models?name=...` and then does a dynamic channel probe against `GET /v0/management/model-definitions/:channel` using auth-provided identifiers rather than a hardcoded provider-to-channel table.
+- OAuth cards are shown in an adaptive multi-column grid and model lists are collapsed by default to reduce space usage.
 
 ## Upstream APIs In Active Use
 
 - `/v0/management/config`
 - `/v0/management/latest-version`
 - `/v0/management/auth-files`
+- `/v0/management/auth-files/models`
 - `/v0/management/auth-files/status`
+- `/v0/management/model-definitions/:channel`
 - `/v0/management/codex-auth-url`
 - `/v0/management/anthropic-auth-url`
 - `/v0/management/gemini-cli-auth-url`

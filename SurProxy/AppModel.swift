@@ -38,6 +38,28 @@ struct OAuthProfile: Identifiable, Hashable {
     var email: String?
     var account: String?
     var note: String?
+    var models: [AvailableModel]
+}
+
+struct AvailableModel: Identifiable, Hashable {
+    let id: String
+    var displayName: String?
+    var type: String?
+    var ownedBy: String?
+
+    var subtitle: String {
+        var parts: [String] = []
+        if let displayName, !displayName.isEmpty, displayName != id {
+            parts.append(displayName)
+        }
+        if let type, !type.isEmpty {
+            parts.append(type)
+        }
+        if let ownedBy, !ownedBy.isEmpty {
+            parts.append(ownedBy)
+        }
+        return parts.joined(separator: " · ")
+    }
 }
 
 enum OAuthLoginProvider: String, CaseIterable, Identifiable {

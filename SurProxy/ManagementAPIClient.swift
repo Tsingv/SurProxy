@@ -49,6 +49,25 @@ struct ManagementOAuthStatusResponse: Decodable {
     let url: String?
 }
 
+struct ManagementAuthFileModel: Decodable {
+    let id: String
+    let displayName: String?
+    let type: String?
+    let ownedBy: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case displayName = "display_name"
+        case type
+        case ownedBy = "owned_by"
+    }
+}
+
+struct ManagementStaticModelDefinitionsResponse: Decodable {
+    let channel: String
+    let models: [ManagementAuthFileModel]
+}
+
 final class ManagementAPIClient {
     private let session: URLSession
 
@@ -120,6 +139,34 @@ final class ManagementAPIClient {
             method: "GET",
             body: nil
         )
+    }
+
+    func authFileModels(baseURL: URL, key: String, name: String) async throws -> [ManagementAuthFileModel] {
+        struct Response: Decodable {
+            let models: [ManagementAuthFileModel]
+        }
+
+        let response: Response = try await request(
+            baseURL: baseURL,
+            path: "auth-files/models",
+            queryItems: [URLQueryItem(name: "name", value: name)],
+            key: key,
+            method: "GET",
+            body: nil
+        )
+        return response.models
+    }
+
+    func staticModelDefinitions(baseURL: URL, key: String, channel: String) async throws -> [ManagementAuthFileModel] {
+        let response: ManagementStaticModelDefinitionsResponse = try await request(
+            baseURL: baseURL,
+            path: "model-definitions/\(channel)",
+            queryItems: [],
+            key: key,
+            method: "GET",
+            body: nil
+        )
+        return response.models
     }
 
     func toggleAuthFile(baseURL: URL, key: String, name: String, disabled: Bool) async throws {
