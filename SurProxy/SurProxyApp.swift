@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import AppKit
 
 @main
 struct SurProxyApp: App {
@@ -19,6 +20,9 @@ struct SurProxyApp: App {
         WindowGroup {
             ContentView(viewModel: viewModel)
                 .frame(minWidth: 1040, minHeight: 680)
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+                    viewModel.shutdown()
+                }
         }
     }
 }

@@ -106,7 +106,7 @@ On app startup:
 1. Resolve runtime paths.
 2. Load or bootstrap runtime manifest.
 3. Ensure bundled runtime exists and copy it to the writable runtime location if needed.
-4. Rewrite the SurProxy-managed config file using current manifest values.
+4. Ensure the SurProxy-managed config contains current manifest-owned values without deleting existing provider configuration.
 5. Start the active `CLIProxyAPIPlus` binary if not already started in this app session.
 6. Wait for the management API to become healthy.
 7. Load runtime snapshot data from management endpoints.
@@ -130,6 +130,12 @@ The fix was:
 
 - keep auth files in `~/.cli-proxy-api/`
 - keep SurProxy runtime config separate and fully controlled by SurProxy
+
+There was a later follow-up correction:
+
+- SurProxy must not overwrite the whole app-managed `config.yaml` during prepare/start/reload
+- provider blocks written through upstream management APIs must be preserved
+- current `RuntimeManager.ensureConfig` only upserts the fields SurProxy owns
 
 ### Runtime install and reinstall
 
@@ -156,9 +162,15 @@ Current logic consumes runtime output continuously and keeps a rolling recent lo
 
 One additional runtime behavior to remember:
 
-- `RuntimeManager.ensureConfig` rewrites the SurProxy-managed config file each time runtime preparation runs
-- this keeps port, auth-dir, and management key aligned with the manifest
-- this is intentional and avoids drift with pre-existing user config
+- `RuntimeManager.ensureConfig` runs during runtime preparation
+- it keeps port, auth-dir, and management key aligned with the manifest
+- it must preserve existing provider configuration and other non-owned config blocks
+
+One additional startup sequencing fix already applied:
+
+- SurProxy previously used `URLSession` to call `/v0/management/config` even before the runtime socket was listening
+- that produced noisy `NSURLErrorDomain Code=-1004` connection-refused logs during startup
+- `ManagementAPIClient.healthCheck` now first checks local TCP reachability for the target host and port, then issues the HTTP request only after the port is open
 
 ## OAuth Integration Boundary
 
@@ -197,12 +209,14 @@ Current actions exposed:
 - Login Anthropic
 - Login Gemini
 - toggle auth file active/inactive
+- add provider entries through upstream `config.yaml` management
 
 Current display behavior:
 
 - OAuth files prefer upstream management API state when available
 - if the management API path fails, SurProxy still shows locally discovered auth files from disk
 - provider routing is currently read-only summary UI; it is not a true config editor yet
+- provider summary depends on the real upstream config, so if provider entries disappear after reload it usually indicates config was overwritten rather than a UI-only problem
 
 ## Important macOS Packaging Decision
 
@@ -252,6 +266,7 @@ The following have been verified during development:
 - the bundled runtime is copied into the app bundle resources
 - the packaged runtime can be launched directly
 - management endpoints respond when the runtime is healthy
+- `GET http://127.0.0.1:8787/v0/management/config` returns `200 OK` when launched with the current SurProxy-managed config and manifest key
 - `codex-auth-url?is_webui=true` returns a valid upstream OAuth URL and state
 - auth files exist in `~/.cli-proxy-api/` and upstream runtime logs confirm they are loaded as clients
 - SurProxy now has a local disk fallback for auth file visibility even if management auth-file parsing fails

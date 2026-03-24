@@ -12,9 +12,9 @@ enum ProxyRuntimeState: String, CaseIterable, Identifiable {
     case stopped
     case degraded
 
-    var id: String { rawValue }
+    nonisolated var id: String { rawValue }
 
-    var title: String {
+    nonisolated var title: String {
         switch self {
         case .running:
             return "Running"
@@ -83,6 +83,105 @@ struct ProviderRoute: Identifiable, Hashable {
     var modelCount: Int
     var isEnabled: Bool
     var isEditable: Bool
+    var configKey: String
+}
+
+enum ProviderConfigurationKind: String, CaseIterable, Identifiable {
+    case openAICompatibility = "openai-compatibility"
+    case geminiAPIKey = "gemini-api-key"
+    case claudeAPIKey = "claude-api-key"
+    case codexAPIKey = "codex-api-key"
+    case vertexAPIKey = "vertex-api-key"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .openAICompatibility:
+            return "OpenAI Compatibility"
+        case .geminiAPIKey:
+            return "Gemini API Key"
+        case .claudeAPIKey:
+            return "Claude API Key"
+        case .codexAPIKey:
+            return "Codex API Key"
+        case .vertexAPIKey:
+            return "Vertex API Key"
+        }
+    }
+
+    nonisolated var configKey: String { rawValue }
+
+    nonisolated var defaultBaseURL: String {
+        switch self {
+        case .openAICompatibility:
+            return "https://api.openai.com/v1"
+        case .geminiAPIKey:
+            return "https://generativelanguage.googleapis.com"
+        case .claudeAPIKey:
+            return "https://api.anthropic.com"
+        case .codexAPIKey:
+            return "https://api.openai.com/v1"
+        case .vertexAPIKey:
+            return "https://aiplatform.googleapis.com"
+        }
+    }
+
+    nonisolated var defaultModelName: String {
+        switch self {
+        case .openAICompatibility:
+            return "gpt-4.1"
+        case .geminiAPIKey:
+            return "gemini-2.5-pro"
+        case .claudeAPIKey:
+            return "claude-sonnet-4-20250514"
+        case .codexAPIKey:
+            return "gpt-5-codex"
+        case .vertexAPIKey:
+            return "gemini-2.5-pro"
+        }
+    }
+
+    nonisolated var supportsProviderName: Bool {
+        switch self {
+        case .openAICompatibility:
+            return true
+        case .geminiAPIKey, .claudeAPIKey, .codexAPIKey, .vertexAPIKey:
+            return false
+        }
+    }
+}
+
+struct ProviderDraft {
+    var kind: ProviderConfigurationKind = .openAICompatibility
+    var providerName: String = ""
+    var baseURL: String = ProviderConfigurationKind.openAICompatibility.defaultBaseURL
+    var apiKey: String = ""
+    var modelName: String = ProviderConfigurationKind.openAICompatibility.defaultModelName
+    var modelAlias: String = ProviderConfigurationKind.openAICompatibility.defaultModelName
+
+    mutating func applyKindDefaults() {
+        baseURL = kind.defaultBaseURL
+        modelName = kind.defaultModelName
+        if modelAlias.isEmpty || modelAlias == providerName {
+            modelAlias = kind.defaultModelName
+        }
+        if !kind.supportsProviderName {
+            providerName = ""
+        }
+    }
+}
+
+struct ProviderDraftValidation {
+    var providerName: String?
+    var baseURL: String?
+    var apiKey: String?
+    var modelName: String?
+    var modelAlias: String?
+
+    var hasAnyError: Bool {
+        providerName != nil || baseURL != nil || apiKey != nil || modelName != nil || modelAlias != nil
+    }
 }
 
 enum RuntimeBinarySource: String, CaseIterable, Identifiable, Codable {
@@ -123,6 +222,8 @@ struct ProxyStatusSnapshot {
     var binary: RuntimeBinaryStatus
     var managementBaseURL: String
     var managementAPIDisabled: Bool
+    var existingRuntimeDetected: Bool
+    var runtimeNotice: String?
     var oauthProfiles: [OAuthProfile]
     var providers: [ProviderRoute]
 
@@ -144,6 +245,8 @@ struct ProxyStatusSnapshot {
             ),
             managementBaseURL: "http://127.0.0.1:8787/v0/management",
             managementAPIDisabled: false,
+            existingRuntimeDetected: false,
+            runtimeNotice: nil,
             oauthProfiles: [],
             providers: []
         )

@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import Darwin
 
 struct ManagementAuthFile {
     let id: String?
@@ -77,7 +78,8 @@ final class ManagementAPIClient {
             queryItems: [],
             key: key,
             method: "GET",
-            body: nil
+            body: nil,
+            timeoutInterval: 15
         )
         return response.latestVersion
     }
@@ -145,7 +147,35 @@ final class ManagementAPIClient {
         return object as? [String: Any] ?? [:]
     }
 
+    func getConfigYAML(baseURL: URL, key: String) async throws -> String {
+        let data = try await requestData(
+            baseURL: baseURL,
+            path: "config.yaml",
+            queryItems: [],
+            key: key,
+            method: "GET",
+            body: nil
+        )
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    func putConfigYAML(baseURL: URL, key: String, yaml: String) async throws {
+        let data = Data(yaml.utf8)
+        let _: EmptyResponse = try await request(
+            baseURL: baseURL,
+            path: "config.yaml",
+            queryItems: [],
+            key: key,
+            method: "PUT",
+            body: data,
+            contentType: "application/yaml; charset=utf-8"
+        )
+    }
+
     func healthCheck(baseURL: URL, key: String) async -> Bool {
+        guard isPortReachable(baseURL: baseURL) else {
+            return false
+        }
         do {
             let _: [String: Any] = try await getConfig(baseURL: baseURL, key: key)
             return true
@@ -160,7 +190,9 @@ final class ManagementAPIClient {
         queryItems: [URLQueryItem],
         key: String,
         method: String,
-        body: Data?
+        body: Data?,
+        contentType: String? = nil,
+        timeoutInterval: TimeInterval? = nil
     ) async throws -> T {
         let data = try await requestData(
             baseURL: baseURL,
@@ -168,7 +200,9 @@ final class ManagementAPIClient {
             queryItems: queryItems,
             key: key,
             method: method,
-            body: body
+            body: body,
+            contentType: contentType,
+            timeoutInterval: timeoutInterval
         )
         if T.self == EmptyResponse.self {
             return EmptyResponse() as! T
@@ -182,15 +216,20 @@ final class ManagementAPIClient {
         queryItems: [URLQueryItem],
         key: String,
         method: String,
-        body: Data?
+        body: Data?,
+        contentType: String? = nil,
+        timeoutInterval: TimeInterval? = nil
     ) async throws -> Data {
         let url = try makeURL(baseURL: baseURL, path: path, queryItems: queryItems)
         var request = URLRequest(url: url)
         request.httpMethod = method
+        if let timeoutInterval {
+            request.timeoutInterval = timeoutInterval
+        }
         request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         if let body {
             request.httpBody = body
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue(contentType ?? "application/json", forHTTPHeaderField: "Content-Type")
         }
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
@@ -218,6 +257,38 @@ final class ManagementAPIClient {
             throw URLError(.badURL)
         }
         return url
+    }
+
+    private func isPortReachable(baseURL: URL) -> Bool {
+        guard let host = baseURL.host, let port = baseURL.port else {
+            return false
+        }
+
+        let socketFD = socket(AF_INET, SOCK_STREAM, 0)
+        if socketFD < 0 {
+            return false
+        }
+        defer { close(socketFD) }
+
+        var timeout = timeval(tv_sec: 0, tv_usec: 150_000)
+        setsockopt(socketFD, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        setsockopt(socketFD, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.stride)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = in_port_t(UInt16(port).bigEndian)
+
+        let conversionResult = host.withCString { inet_pton(AF_INET, $0, &address.sin_addr) }
+        guard conversionResult == 1 else {
+            return false
+        }
+
+        return withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                connect(socketFD, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_in>.stride)) == 0
+            }
+        }
     }
 
     private static func parseAuthFile(_ payload: [String: Any]) -> ManagementAuthFile {

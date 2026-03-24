@@ -64,6 +64,8 @@ Important behavior:
 - SurProxy uses the management API as the primary integration surface.
 - For auth files, SurProxy now parses the real `CLIProxyAPIPlus` `GET /v0/management/auth-files` response shape based on upstream source.
 - If the management API returns an empty auth list or the response cannot be interpreted, SurProxy falls back to scanning `~/.cli-proxy-api/*.json` directly so the UI does not collapse to an empty state.
+- SurProxy preserves existing provider configuration in its app-managed `config.yaml` and only upserts the runtime fields it must own.
+- SurProxy health checks now avoid sending `GET /v0/management/config` before `127.0.0.1:8787` is actually listening, which prevents noisy early `NSURLErrorDomain Code=-1004` failures during startup.
 
 ## Upstream APIs In Active Use
 
@@ -87,6 +89,12 @@ That is currently required because the product needs to:
 - read and write `~/.cli-proxy-api/`
 
 Leaving sandbox enabled caused localhost `Operation not permitted` failures.
+
+## Recent Debugging Findings
+
+- Provider entries disappearing after `Reload Config` or runtime restart was caused by SurProxy overwriting the full app-managed `config.yaml`. This has been fixed so provider blocks survive prepare, reload, and restart paths.
+- The management endpoint `http://127.0.0.1:8787/v0/management/config` has been manually verified to return `200 OK` when the runtime is launched with the current SurProxy config and management key.
+- Repeated console noise for `Could not connect to the server` against `/v0/management/config` was caused by health probing before the runtime socket was listening. The probe now checks TCP reachability first and only issues HTTP once the port is open.
 
 ## Remaining Work
 

@@ -29,6 +29,7 @@ final class RuntimeManager {
     private var process: Process?
     private var outputPipe: Pipe?
     private var capturedLog = ""
+    private var lastExitStatus: Int32?
 
     init(fileManager: FileManager = .default) {
         self.fileManager = fileManager
@@ -103,19 +104,23 @@ final class RuntimeManager {
     }
 
     func ensureConfig(paths: RuntimePaths, manifest: RuntimeManifest) throws {
-        let yaml = """
-        host: '127.0.0.1'
-        port: \(manifest.port)
-        auth-dir: '\(paths.authDirectory.path)'
-        remote-management:
-          allow-remote: false
-          secret-key: '\(manifest.managementKey)'
-          disable-control-panel: true
-        debug: false
-        logging-to-file: true
-        usage-statistics-enabled: true
-        incognito-browser: true
-        """
+        let yaml: String
+        if fileManager.fileExists(atPath: paths.configFile.path),
+           let existing = try? String(contentsOf: paths.configFile, encoding: .utf8),
+           !existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            yaml = Self.updatingManagedConfig(
+                existing,
+                authDirectory: paths.authDirectory.path,
+                port: manifest.port,
+                managementKey: manifest.managementKey
+            )
+        } else {
+            yaml = Self.defaultConfig(
+                authDirectory: paths.authDirectory.path,
+                port: manifest.port,
+                managementKey: manifest.managementKey
+            )
+        }
 
         try yaml.write(to: paths.configFile, atomically: true, encoding: .utf8)
     }
@@ -127,6 +132,10 @@ final class RuntimeManager {
         guard fileManager.fileExists(atPath: paths.activeBinary.path) else {
             throw RuntimeManagerError.activeBinaryMissing
         }
+
+        capturedLog = ""
+        lastExitStatus = nil
+        appendLog("[SurProxy] launching runtime: \(paths.activeBinary.path) --config \(paths.configFile.path)\n")
 
         let process = Process()
         process.executableURL = paths.activeBinary
@@ -150,6 +159,7 @@ final class RuntimeManager {
                 self?.outputPipe?.fileHandleForReading.readabilityHandler = nil
                 self?.outputPipe = nil
                 self?.process = nil
+                self?.lastExitStatus = process.terminationStatus
                 self?.appendLog("\n[SurProxy] runtime exited with status \(process.terminationStatus)\n")
             }
         }
@@ -177,6 +187,10 @@ final class RuntimeManager {
         capturedLog
     }
 
+    var recentExitStatus: Int32? {
+        lastExitStatus
+    }
+
     private func appendLog(_ chunk: String) {
         capturedLog.append(chunk)
         if capturedLog.count > 12000 {
@@ -190,5 +204,83 @@ final class RuntimeManager {
         let desiredPermissions = permissions | 0o755
         attributes[.posixPermissions] = NSNumber(value: desiredPermissions)
         try fileManager.setAttributes(attributes, ofItemAtPath: url.path)
+    }
+
+    private static func defaultConfig(authDirectory: String, port: Int, managementKey: String) -> String {
+        """
+        host: '127.0.0.1'
+        port: \(port)
+        auth-dir: '\(authDirectory)'
+        remote-management:
+          allow-remote: false
+          secret-key: '\(managementKey)'
+          disable-control-panel: true
+        debug: false
+        logging-to-file: true
+        usage-statistics-enabled: true
+        incognito-browser: true
+        """
+    }
+
+    private static func updatingManagedConfig(_ yaml: String, authDirectory: String, port: Int, managementKey: String) -> String {
+        var result = yaml
+        result = upsertTopLevelScalar(key: "host", value: "'127.0.0.1'", in: result)
+        result = upsertTopLevelScalar(key: "port", value: "\(port)", in: result)
+        result = upsertTopLevelScalar(key: "auth-dir", value: "'\(authDirectory)'", in: result)
+        result = upsertTopLevelScalar(key: "debug", value: "false", in: result)
+        result = upsertTopLevelScalar(key: "logging-to-file", value: "true", in: result)
+        result = upsertTopLevelScalar(key: "usage-statistics-enabled", value: "true", in: result)
+        result = upsertTopLevelScalar(key: "incognito-browser", value: "true", in: result)
+        result = upsertRemoteManagementBlock(in: result, managementKey: managementKey)
+        if !result.hasSuffix("\n") {
+            result.append("\n")
+        }
+        return result
+    }
+
+    private static func upsertTopLevelScalar(key: String, value: String, in yaml: String) -> String {
+        var lines = yaml.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let prefix = "\(key):"
+        if let index = lines.firstIndex(where: { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            return !line.hasPrefix(" ") && trimmed.hasPrefix(prefix)
+        }) {
+            lines[index] = "\(key): \(value)"
+        } else {
+            if !lines.isEmpty, !lines.last!.isEmpty {
+                lines.append("")
+            }
+            lines.append("\(key): \(value)")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private static func upsertRemoteManagementBlock(in yaml: String, managementKey: String) -> String {
+        var lines = yaml.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let block = [
+            "remote-management:",
+            "  allow-remote: false",
+            "  secret-key: '\(managementKey)'",
+            "  disable-control-panel: true"
+        ]
+
+        if let index = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == "remote-management:" }) {
+            var endIndex = index + 1
+            while endIndex < lines.count {
+                let line = lines[endIndex]
+                if !line.isEmpty && !line.hasPrefix(" ") && !line.hasPrefix("\t") {
+                    break
+                }
+                endIndex += 1
+            }
+            lines.replaceSubrange(index..<endIndex, with: block)
+        } else {
+            if !lines.isEmpty, !lines.last!.isEmpty {
+                lines.append("")
+            }
+            lines.append(contentsOf: block)
+        }
+
+        return lines.joined(separator: "\n")
     }
 }
