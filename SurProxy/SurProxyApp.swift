@@ -9,9 +9,16 @@ import SwiftUI
 
 @main
 struct SurProxyApp: App {
+    @StateObject private var viewModel: AppViewModel
+
+    init() {
+        _viewModel = StateObject(wrappedValue: AppViewModel(service: ProxyService()))
+    }
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ContentView(viewModel: viewModel)
+                .frame(minWidth: 1040, minHeight: 680)
         }
     }
 }
