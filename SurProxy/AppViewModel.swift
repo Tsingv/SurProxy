@@ -18,6 +18,7 @@ final class AppViewModel: ObservableObject {
     @Published var oauthInFlightProvider: OAuthLoginProvider?
     @Published var providerDraft = ProviderDraft()
     @Published var providerDraftValidation = ProviderDraftValidation()
+    @Published var apiKeyDraft = ""
     @Published var pendingProviderSelectedModels: [String: Set<String>] = [:]
     @Published var providerModelLoadingKeys: Set<String> = []
     @Published var providerNameDrafts: [String: String] = [:]
@@ -239,6 +240,19 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    func addAPIKey() async {
+        let trimmed = apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        await performMutation { [self] in
+            try await self.service.addAPIKey(trimmed)
+        }
+
+        if lastErrorMessage == nil {
+            apiKeyDraft = ""
+        }
+    }
+
     func clearProviderValidation() {
         providerDraftValidation = ProviderDraftValidation()
     }
@@ -273,6 +287,12 @@ final class AppViewModel: ObservableObject {
         )
     }
 
+    func confirmDeleteAPIKey(_ value: String) {
+        pendingDeletionConfirmation = .apiKey(
+            PendingAPIKeyDeletion(id: value, value: value)
+        )
+    }
+
     func deleteConfirmedItem(_ pendingDeletionConfirmation: PendingDeletionConfirmation) async {
         self.pendingDeletionConfirmation = nil
         switch pendingDeletionConfirmation {
@@ -283,6 +303,10 @@ final class AppViewModel: ObservableObject {
         case .provider(let pendingProviderDeletion):
             await performMutation { [self] in
                 return try await self.service.deleteProvider(stableKey: pendingProviderDeletion.stableKey)
+            }
+        case .apiKey(let pendingAPIKeyDeletion):
+            await performMutation { [self] in
+                return try await self.service.deleteAPIKey(pendingAPIKeyDeletion.value)
             }
         }
     }
@@ -295,6 +319,12 @@ final class AppViewModel: ObservableObject {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(modelID, forType: .string)
+    }
+
+    func copyAPIKey(_ value: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(value, forType: .string)
     }
 
     private func performMutation(_ operation: @escaping () async throws -> ProxyStatusSnapshot) async {

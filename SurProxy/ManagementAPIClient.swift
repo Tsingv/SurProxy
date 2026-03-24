@@ -77,6 +77,14 @@ struct ManagementProviderEntry {
     let rawObject: [String: Any]
 }
 
+struct ManagementAPIKeysResponse: Decodable {
+    let apiKeys: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case apiKeys = "api-keys"
+    }
+}
+
 final class ManagementAPIClient {
     private let session: URLSession
 
@@ -194,6 +202,45 @@ final class ManagementAPIClient {
             return []
         }
         return items.map(Self.parseProviderEntry)
+    }
+
+    func apiKeys(baseURL: URL, key: String) async throws -> [String] {
+        let response: ManagementAPIKeysResponse = try await request(
+            baseURL: baseURL,
+            path: "api-keys",
+            queryItems: [],
+            key: key,
+            method: "GET",
+            body: nil
+        )
+        return response.apiKeys
+    }
+
+    func patchAPIKeys(baseURL: URL, key: String, oldValue: String?, newValue: String) async throws {
+        let payload: [String: Any] = [
+            "old": oldValue ?? "",
+            "new": newValue
+        ]
+        let body = try JSONSerialization.data(withJSONObject: payload)
+        let _: EmptyResponse = try await request(
+            baseURL: baseURL,
+            path: "api-keys",
+            queryItems: [],
+            key: key,
+            method: "PATCH",
+            body: body
+        )
+    }
+
+    func deleteAPIKey(baseURL: URL, key: String, value: String) async throws {
+        let _: EmptyResponse = try await request(
+            baseURL: baseURL,
+            path: "api-keys",
+            queryItems: [URLQueryItem(name: "value", value: value)],
+            key: key,
+            method: "DELETE",
+            body: nil
+        )
     }
 
     func putProviderEntries(baseURL: URL, key: String, configKey: String, entries: [[String: Any]]) async throws {

@@ -19,6 +19,8 @@ protocol ProxyServicing {
     func renameProvider(stableKey: String, newName: String) async throws -> ProxyStatusSnapshot
     func deleteProvider(stableKey: String) async throws -> ProxyStatusSnapshot
     func addProvider(_ draft: ProviderDraft) async throws -> ProxyStatusSnapshot
+    func addAPIKey(_ value: String) async throws -> ProxyStatusSnapshot
+    func deleteAPIKey(_ value: String) async throws -> ProxyStatusSnapshot
     func reloadConfiguration() async throws -> ProxyStatusSnapshot
     func reinstallBundledRuntime() async throws -> ProxyStatusSnapshot
     func startOAuthLogin(provider: OAuthLoginProvider) async throws -> OAuthLoginSession
@@ -342,6 +344,31 @@ final class ProxyService: ProxyServicing {
         return try await refreshSnapshot()
     }
 
+    func addAPIKey(_ value: String) async throws -> ProxyStatusSnapshot {
+        try prepareRuntime()
+        try await ensureManagementReady()
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return snapshot }
+        try await apiClient.patchAPIKeys(
+            baseURL: managementBaseURL(),
+            key: manifest.managementKey,
+            oldValue: nil,
+            newValue: trimmed
+        )
+        return try await refreshSnapshot()
+    }
+
+    func deleteAPIKey(_ value: String) async throws -> ProxyStatusSnapshot {
+        try prepareRuntime()
+        try await ensureManagementReady()
+        try await apiClient.deleteAPIKey(
+            baseURL: managementBaseURL(),
+            key: manifest.managementKey,
+            value: value
+        )
+        return try await refreshSnapshot()
+    }
+
     func reloadConfiguration() async throws -> ProxyStatusSnapshot {
         try prepareRuntime()
         try await ensureManagementReady()
@@ -485,6 +512,9 @@ final class ProxyService: ProxyServicing {
 
         if managementReachable {
             next.binary.latestVersion = try? await apiClient.latestVersion(baseURL: baseURL, key: manifest.managementKey)
+            if let apiKeys = try? await apiClient.apiKeys(baseURL: baseURL, key: manifest.managementKey) {
+                next.apiKeys = apiKeys.map { APIKeyEntry(id: $0, value: $0) }
+            }
             if let authFiles = try? await apiClient.authFiles(baseURL: baseURL, key: manifest.managementKey), !authFiles.isEmpty {
                 next.oauthProfiles = try await enrichAuthProfiles(authFiles, baseURL: baseURL)
             } else {
