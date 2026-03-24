@@ -244,6 +244,7 @@ Current display behavior:
 - provider summary depends on the real upstream config and management APIs, so if provider entries disappear after reload it usually indicates config was overwritten rather than a UI-only problem
 - provider enabled-model state should come from management APIs rather than direct config file reads in the UI layer
 - provider model saves should reread provider state from management APIs immediately after write completion instead of relying on arbitrary delays
+- after provider model saves succeed, the app shows a short-lived floating notice instead of a persistent inline message because the final upstream-visible state may still settle shortly after the write; users can re-expand the model list to refresh on demand
 
 ### Provider mutation details
 

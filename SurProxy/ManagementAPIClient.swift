@@ -87,6 +87,8 @@ final class ManagementAPIClient {
             let configuration = URLSessionConfiguration.default
             configuration.timeoutIntervalForRequest = 2
             configuration.timeoutIntervalForResource = 4
+            configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+            configuration.urlCache = nil
             self.session = URLSession(configuration: configuration)
         }
     }
@@ -210,6 +212,23 @@ final class ManagementAPIClient {
         let body = try JSONSerialization.data(withJSONObject: [
             "index": index,
             "value": value
+        ])
+        let _: EmptyResponse = try await request(
+            baseURL: baseURL,
+            path: configKey,
+            queryItems: [],
+            key: key,
+            method: "PATCH",
+            body: body
+        )
+    }
+
+    func patchProviderModels(baseURL: URL, key: String, configKey: String, index: Int, models: [[String: Any]]) async throws {
+        let body = try JSONSerialization.data(withJSONObject: [
+            "index": index,
+            "value": [
+                "models": models
+            ]
         ])
         let _: EmptyResponse = try await request(
             baseURL: baseURL,
@@ -360,6 +379,7 @@ final class ManagementAPIClient {
     ) async throws -> Data {
         let url = try makeURL(baseURL: baseURL, path: path, queryItems: queryItems)
         var request = URLRequest(url: url)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         request.httpMethod = method
         if let timeoutInterval {
             request.timeoutInterval = timeoutInterval
@@ -449,12 +469,14 @@ final class ManagementAPIClient {
     }
 
     nonisolated private static func parseProviderModel(_ object: [String: Any]) -> ManagementAuthFileModel? {
-        guard let id = trimmedStringValue(object["alias"]) ?? trimmedStringValue(object["name"]) else {
+        let upstreamName = trimmedStringValue(object["name"])
+        let alias = trimmedStringValue(object["alias"])
+        guard let id = upstreamName ?? alias else {
             return nil
         }
         return ManagementAuthFileModel(
             id: id,
-            displayName: trimmedStringValue(object["name"]),
+            displayName: alias,
             type: trimmedStringValue(object["type"]),
             ownedBy: nil
         )
@@ -483,6 +505,7 @@ final class ManagementAPIClient {
 
         let requestURL = makeOpenAIModelsURL(from: baseURL)
         var request = URLRequest(url: requestURL)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         request.httpMethod = "GET"
         request.timeoutInterval = 10
         if let bearerToken, !bearerToken.isEmpty {
@@ -516,6 +539,7 @@ final class ManagementAPIClient {
 
         let requestURL = makeClaudeModelsURL(from: baseURL)
         var request = URLRequest(url: requestURL)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         request.httpMethod = "GET"
         request.timeoutInterval = 10
         if let apiKey, !apiKey.isEmpty {
@@ -559,6 +583,7 @@ final class ManagementAPIClient {
         }
 
         var request = URLRequest(url: requestURL)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         request.httpMethod = "GET"
         request.timeoutInterval = 10
         extraHeaders.forEach { request.setValue($1, forHTTPHeaderField: $0) }

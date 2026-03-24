@@ -76,6 +76,7 @@ Important behavior:
 - Saving provider model changes now writes back upstream configuration and then immediately rereads provider state from management APIs so the UI reflects the real saved state.
 - Provider model save strategy currently uses per-entry `PATCH` for `openai-compatibility`, `claude-api-key`, `codex-api-key`, and `vertex-api-key`; `gemini-api-key` still uses grouped `PUT` because upstream patch support for `models` is not available there.
 - The UI shows a global loading overlay during management API mutations so users do not continue interacting with stale state while writes are in flight.
+- After provider model saves finish, SurProxy now shows a short-lived floating notice instead of a persistent message because upstream state can still take a few seconds to settle; users can re-expand the model list to force a refresh.
 
 ## Upstream APIs In Active Use
 
