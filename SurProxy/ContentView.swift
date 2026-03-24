@@ -7,35 +7,61 @@
 
 import SwiftUI
 
+private enum SidebarSection: String, CaseIterable, Identifiable, Hashable {
+    case status
+    case oauth
+    case providers
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .status:
+            return "Status"
+        case .oauth:
+            return "OAuth"
+        case .providers:
+            return "Provider"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .status:
+            return "waveform.path.ecg"
+        case .oauth:
+            return "person.badge.key"
+        case .providers:
+            return "point.3.connected.trianglepath.dotted"
+        }
+    }
+}
+
 struct ContentView: View {
     @ObservedObject var viewModel: AppViewModel
     @State private var expandedModelGroups: Set<UUID> = []
+    @State private var selectedSection: SidebarSection? = .status
 
     var body: some View {
         NavigationSplitView {
-            List {
-                Section("Runtime") {
-                    Label(viewModel.snapshot.runtimeState.title, systemImage: runtimeIcon)
-                    Label("\(viewModel.snapshot.activePort)", systemImage: "network")
-                    Label("\(validOAuthCount) valid OAuth files", systemImage: "checkmark.seal")
-                }
-
-                Section("Paths") {
-                    LabeledContent("Bundled Binary", value: viewModel.snapshot.binary.bundledBinaryPath)
-                    LabeledContent("Active Binary", value: viewModel.snapshot.binary.activeBinaryPath)
-                    LabeledContent("Config", value: viewModel.snapshot.configPath)
-                    LabeledContent("OAuth", value: viewModel.snapshot.oauthDirectory)
-                }
+            List(SidebarSection.allCases, selection: $selectedSection) { section in
+                Label(section.title, systemImage: section.icon)
+                    .tag(section)
             }
             .navigationTitle("SurProxy")
         } detail: {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    runtimeCard
-                    runtimeBinaryCard
-                    oauthLoginCard
-                    oauthCard
-                    providerCard
+                    switch selectedSection ?? .status {
+                    case .status:
+                        runtimeCard
+                        runtimeBinaryCard
+                    case .oauth:
+                        oauthLoginCard
+                        oauthCard
+                    case .providers:
+                        providerCard
+                    }
                 }
                 .padding(24)
             }
@@ -94,6 +120,7 @@ struct ContentView: View {
                 LabeledContent("Port", value: "\(viewModel.snapshot.activePort)")
                 LabeledContent("Runtime Source", value: viewModel.snapshot.binary.source.title)
                 LabeledContent("Runtime Version", value: viewModel.snapshot.binary.currentVersion)
+                LabeledContent("OAuth Files", value: "\(validOAuthCount) valid / \(viewModel.snapshot.oauthProfiles.count) total")
                 if let runtimeNotice = viewModel.snapshot.runtimeNotice {
                     Text(runtimeNotice)
                         .foregroundStyle(.orange)
@@ -115,10 +142,47 @@ struct ContentView: View {
                 LabeledContent("Current Version", value: viewModel.snapshot.binary.currentVersion)
                 LabeledContent("Latest Release", value: viewModel.snapshot.binary.latestVersion ?? "Unknown")
                 LabeledContent("Source", value: viewModel.snapshot.binary.source.title)
+                LabeledContent("Bundled Binary", value: viewModel.snapshot.binary.bundledBinaryPath)
+                LabeledContent("Active Binary", value: viewModel.snapshot.binary.activeBinaryPath)
+                LabeledContent("Config", value: viewModel.snapshot.configPath)
+                LabeledContent("OAuth Directory", value: viewModel.snapshot.oauthDirectory)
                 LabeledContent("Release Feed", value: viewModel.snapshot.binary.releaseFeedURL)
+            }
+        }
+    }
 
-                Text("SurProxy should ship a compiled release binary, copy it to a writable runtime directory, and allow in-app replacement with downloaded or custom binaries.")
+    private var oauthLoginCard: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("OAuth Login")
+                    .font(.title3.weight(.semibold))
+
+                Text("SurProxy delegates provider login to CLIProxyAPIPlus. Starting a login opens the upstream authorization URL in your browser, then SurProxy polls the management API and refreshes local state when the auth file is ready.")
                     .foregroundStyle(.secondary)
+
+                HStack(spacing: 12) {
+                    ForEach(OAuthLoginProvider.allCases) { provider in
+                        if provider == .codex {
+                            Button(buttonTitle(for: provider)) {
+                                viewModel.startOAuthLogin(provider: provider)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(viewModel.isLoading)
+                        } else {
+                            Button(buttonTitle(for: provider)) {
+                                viewModel.startOAuthLogin(provider: provider)
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(viewModel.isLoading)
+                        }
+                    }
+                }
+
+                if let provider = viewModel.oauthInFlightProvider {
+                    Text("\(provider.title) login is waiting for CLIProxyAPIPlus OAuth completion.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
     }
@@ -238,42 +302,6 @@ struct ContentView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
-    private var oauthLoginCard: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("OAuth Login")
-                    .font(.title3.weight(.semibold))
-
-                Text("SurProxy delegates provider login to CLIProxyAPIPlus. Starting a login opens the upstream authorization URL in your browser, then SurProxy polls the management API and refreshes local state when the auth file is ready.")
-                    .foregroundStyle(.secondary)
-
-                HStack(spacing: 12) {
-                    ForEach(OAuthLoginProvider.allCases) { provider in
-                        if provider == .codex {
-                            Button(buttonTitle(for: provider)) {
-                                viewModel.startOAuthLogin(provider: provider)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(viewModel.isLoading)
-                        } else {
-                            Button(buttonTitle(for: provider)) {
-                                viewModel.startOAuthLogin(provider: provider)
-                            }
-                            .buttonStyle(.bordered)
-                            .disabled(viewModel.isLoading)
-                        }
-                    }
-                }
-
-                if let provider = viewModel.oauthInFlightProvider {
-                    Text("\(provider.title) login is waiting for CLIProxyAPIPlus OAuth completion.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-    }
-
     private var providerCard: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 16) {
@@ -350,6 +378,7 @@ struct ContentView: View {
                             .font(.caption)
                             .foregroundStyle(.red)
                     }
+
                     SecureField("API Key", text: $viewModel.providerDraft.apiKey)
                         .textFieldStyle(.roundedBorder)
                     if let message = viewModel.providerDraftValidation.apiKey {
@@ -357,6 +386,7 @@ struct ContentView: View {
                             .font(.caption)
                             .foregroundStyle(.red)
                     }
+
                     TextField("Upstream Model Name", text: $viewModel.providerDraft.modelName)
                         .textFieldStyle(.roundedBorder)
                     if let message = viewModel.providerDraftValidation.modelName {
@@ -364,6 +394,7 @@ struct ContentView: View {
                             .font(.caption)
                             .foregroundStyle(.red)
                     }
+
                     TextField("Client Model Alias", text: $viewModel.providerDraft.modelAlias)
                         .textFieldStyle(.roundedBorder)
                     if let message = viewModel.providerDraftValidation.modelAlias {
@@ -378,14 +409,14 @@ struct ContentView: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(viewModel.isLoading)
-
-                        Text("This writes through CLIProxyAPIPlus `/v0/management/config.yaml` and then refreshes config state.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
                     }
                 }
             }
         }
+    }
+
+    private var validOAuthCount: Int {
+        viewModel.snapshot.oauthProfiles.filter(\.isValid).count
     }
 
     private var runtimeIcon: String {
@@ -393,7 +424,7 @@ struct ContentView: View {
         case .running:
             return "play.circle.fill"
         case .stopped:
-            return "stop.circle.fill"
+            return "stop.circle"
         case .degraded:
             return "exclamationmark.triangle.fill"
         }
@@ -410,14 +441,7 @@ struct ContentView: View {
         }
     }
 
-    private var validOAuthCount: Int {
-        viewModel.snapshot.oauthProfiles.filter(\.isValid).count
-    }
-
     private func buttonTitle(for provider: OAuthLoginProvider) -> String {
-        if viewModel.oauthInFlightProvider == provider {
-            return "Waiting for \(provider.title)"
-        }
-        return "Login \(provider.title)"
+        "Login \(provider.title)"
     }
 }
