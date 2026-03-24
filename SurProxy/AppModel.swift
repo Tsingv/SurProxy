@@ -72,6 +72,14 @@ enum OAuthLoginProvider: String, CaseIterable, Identifiable {
     case codex
     case anthropic
     case gemini
+    case gitlab
+    case antigravity
+    case qwen
+    case kilo
+    case kimi
+    case iflow
+    case kiro
+    case githubCopilot
 
     var id: String { rawValue }
 
@@ -83,6 +91,22 @@ enum OAuthLoginProvider: String, CaseIterable, Identifiable {
             return "Anthropic"
         case .gemini:
             return "Gemini"
+        case .gitlab:
+            return "GitLab"
+        case .antigravity:
+            return "Antigravity"
+        case .qwen:
+            return "Qwen"
+        case .kilo:
+            return "Kilo"
+        case .kimi:
+            return "Kimi"
+        case .iflow:
+            return "iFlow"
+        case .kiro:
+            return "Kiro"
+        case .githubCopilot:
+            return "GitHub Copilot"
         }
     }
 
@@ -94,8 +118,109 @@ enum OAuthLoginProvider: String, CaseIterable, Identifiable {
             return "anthropic-auth-url"
         case .gemini:
             return "gemini-cli-auth-url"
+        case .gitlab:
+            return "gitlab-auth-url"
+        case .antigravity:
+            return "antigravity-auth-url"
+        case .qwen:
+            return "qwen-auth-url"
+        case .kilo:
+            return "kilo-auth-url"
+        case .kimi:
+            return "kimi-auth-url"
+        case .iflow:
+            return "iflow-auth-url"
+        case .kiro:
+            return "kiro-auth-url"
+        case .githubCopilot:
+            return "github-auth-url"
         }
     }
+
+    var requiresPrompt: Bool {
+        switch self {
+        case .gitlab, .iflow, .kiro:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+enum KiroLoginMethod: String, CaseIterable, Identifiable {
+    case aws
+    case google
+    case github
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .aws:
+            return "AWS Builder ID"
+        case .google:
+            return "Google"
+        case .github:
+            return "GitHub"
+        }
+    }
+}
+
+enum GitLabLoginMode: String, CaseIterable, Identifiable {
+    case oauth
+    case personalAccessToken
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .oauth:
+            return "OAuth"
+        case .personalAccessToken:
+            return "PAT"
+        }
+    }
+}
+
+enum IFlowLoginMode: String, CaseIterable, Identifiable {
+    case browser
+    case cookie
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .browser:
+            return "Browser"
+        case .cookie:
+            return "Cookie"
+        }
+    }
+}
+
+struct OAuthLoginRequestOptions {
+    var gitLabMode: GitLabLoginMode?
+    var gitLabBaseURL: String?
+    var gitLabClientID: String?
+    var gitLabClientSecret: String?
+    var gitLabPersonalAccessToken: String?
+    var iflowMode: IFlowLoginMode?
+    var iflowCookie: String?
+    var kiroMethod: KiroLoginMethod?
+}
+
+struct OAuthLoginPromptState: Identifiable {
+    let provider: OAuthLoginProvider
+    var gitLabMode: GitLabLoginMode = .oauth
+    var gitLabBaseURL: String = ""
+    var gitLabClientID: String = ""
+    var gitLabClientSecret: String = ""
+    var gitLabPersonalAccessToken: String = ""
+    var iflowMode: IFlowLoginMode = .browser
+    var iflowCookie: String = ""
+    var kiroMethod: KiroLoginMethod = .google
+
+    var id: String { provider.rawValue }
 }
 
 struct OAuthLoginSession {
