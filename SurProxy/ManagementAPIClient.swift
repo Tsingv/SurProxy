@@ -138,14 +138,26 @@ final class ManagementAPIClient {
         return files.map(Self.parseAuthFile)
     }
 
-    func startOAuth(baseURL: URL, key: String, provider: OAuthLoginProvider) async throws -> ManagementOAuthStartResponse {
+    func startOAuth(baseURL: URL, key: String, provider: OAuthLoginProvider, queryItems: [URLQueryItem] = []) async throws -> ManagementOAuthStartResponse {
         try await request(
             baseURL: baseURL,
             path: provider.managementPath,
-            queryItems: [URLQueryItem(name: "is_webui", value: "true")],
+            queryItems: [URLQueryItem(name: "is_webui", value: "true")] + queryItems,
             key: key,
             method: "GET",
             body: nil
+        )
+    }
+
+    func submitOAuthForm(baseURL: URL, key: String, provider: OAuthLoginProvider, payload: [String: Any]) async throws {
+        let body = try JSONSerialization.data(withJSONObject: payload)
+        let _: EmptyResponse = try await request(
+            baseURL: baseURL,
+            path: provider.managementPath,
+            queryItems: [],
+            key: key,
+            method: "POST",
+            body: body
         )
     }
 

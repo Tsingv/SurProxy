@@ -19,6 +19,7 @@ final class AppViewModel: ObservableObject {
     @Published var providerDraft = ProviderDraft()
     @Published var providerDraftValidation = ProviderDraftValidation()
     @Published var apiKeyDraft = ""
+    @Published var oauthPromptState: OAuthLoginPromptState?
     @Published var pendingProviderSelectedModels: [String: Set<String>] = [:]
     @Published var providerModelLoadingKeys: Set<String> = []
     @Published var providerNameDrafts: [String: String] = [:]
@@ -103,6 +104,30 @@ final class AppViewModel: ObservableObject {
     }
 
     func startOAuthLogin(provider: OAuthLoginProvider) {
+        if provider.requiresPrompt {
+            oauthPromptState = OAuthLoginPromptState(provider: provider)
+            return
+        }
+        startOAuthLogin(provider: provider, options: OAuthLoginRequestOptions())
+    }
+
+    func submitOAuthPrompt() {
+        guard let prompt = oauthPromptState else { return }
+        let options = OAuthLoginRequestOptions(
+            gitLabMode: prompt.gitLabMode,
+            gitLabBaseURL: prompt.gitLabBaseURL,
+            gitLabClientID: prompt.gitLabClientID,
+            gitLabClientSecret: prompt.gitLabClientSecret,
+            gitLabPersonalAccessToken: prompt.gitLabPersonalAccessToken,
+            iflowMode: prompt.iflowMode,
+            iflowCookie: prompt.iflowCookie,
+            kiroMethod: prompt.kiroMethod
+        )
+        oauthPromptState = nil
+        startOAuthLogin(provider: prompt.provider, options: options)
+    }
+
+    private func startOAuthLogin(provider: OAuthLoginProvider, options: OAuthLoginRequestOptions) {
         Task {
             isLoading = true
             oauthInFlightProvider = provider
@@ -112,11 +137,15 @@ final class AppViewModel: ObservableObject {
             }
 
             do {
-                let session = try await service.startOAuthLogin(provider: provider)
+                let session = try await service.startOAuthLogin(provider: provider, options: options)
                 if let url = URL(string: session.authURL) {
                     NSWorkspace.shared.open(url)
                 }
-                snapshot = try await service.pollOAuthLogin(state: session.state)
+                if !session.state.isEmpty {
+                    snapshot = try await service.pollOAuthLogin(state: session.state)
+                } else {
+                    snapshot = try await service.loadSnapshot()
+                }
                 lastErrorMessage = nil
             } catch {
                 lastErrorMessage = error.localizedDescription

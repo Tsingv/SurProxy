@@ -37,6 +37,14 @@ Important upstream APIs currently used by SurProxy:
 - `/v0/management/codex-auth-url`
 - `/v0/management/anthropic-auth-url`
 - `/v0/management/gemini-cli-auth-url`
+- `/v0/management/gitlab-auth-url`
+- `/v0/management/antigravity-auth-url`
+- `/v0/management/qwen-auth-url`
+- `/v0/management/kilo-auth-url`
+- `/v0/management/kimi-auth-url`
+- `/v0/management/iflow-auth-url`
+- `/v0/management/kiro-auth-url`
+- `/v0/management/github-auth-url`
 - `/v0/management/get-auth-status`
 - upstream auth-files response shape is defined in `Vendor/CLIProxyAPIPlus/internal/api/handlers/management/auth_files.go`
 
@@ -197,6 +205,18 @@ SurProxy currently does:
 - poll `get-auth-status`
 - refresh auth file state after completion
 
+SurProxy now also supports native prompt sheets for upstream login flows that need extra input before the request can be started:
+
+- GitLab:
+  - OAuth mode with `client_id`, optional `client_secret`, and optional `base_url`
+  - PAT import mode using upstream `POST /v0/management/gitlab-auth-url`
+- iFlow:
+  - browser auth
+  - cookie import mode using upstream `POST /v0/management/iflow-auth-url`
+- Kiro:
+  - browser-oriented social login selection for Google or GitHub
+  - do not silently default the UI to the AWS Builder ID device-code flow, because that requires a different UX than the current browser-first login path
+
 SurProxy should continue to avoid:
 
 - implementing provider OAuth flows itself
@@ -224,6 +244,14 @@ Current actions exposed:
 - Login Codex
 - Login Anthropic
 - Login Gemini
+- Login GitLab
+- Login Antigravity
+- Login Qwen
+- Login Kilo
+- Login Kimi
+- Login iFlow
+- Login Kiro
+- Login GitHub Copilot
 - toggle auth file active/inactive
 - add provider entries through upstream `config.yaml` management
 - add, copy, and delete downstream API keys through upstream `/v0/management/api-keys`

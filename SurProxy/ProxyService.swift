@@ -23,7 +23,7 @@ protocol ProxyServicing {
     func deleteAPIKey(_ value: String) async throws -> ProxyStatusSnapshot
     func reloadConfiguration() async throws -> ProxyStatusSnapshot
     func reinstallBundledRuntime() async throws -> ProxyStatusSnapshot
-    func startOAuthLogin(provider: OAuthLoginProvider) async throws -> OAuthLoginSession
+    func startOAuthLogin(provider: OAuthLoginProvider, options: OAuthLoginRequestOptions) async throws -> OAuthLoginSession
     func pollOAuthLogin(state: String) async throws -> ProxyStatusSnapshot
     func shutdown()
 }
@@ -385,17 +385,68 @@ final class ProxyService: ProxyServicing {
         return try await refreshSnapshot()
     }
 
-    func startOAuthLogin(provider: OAuthLoginProvider) async throws -> OAuthLoginSession {
+    func startOAuthLogin(provider: OAuthLoginProvider, options: OAuthLoginRequestOptions) async throws -> OAuthLoginSession {
         try prepareRuntime()
         if !runtimeManager.isRunning {
             try runtimeManager.start(paths: paths)
             try await waitForManagementReady()
         }
 
+        if provider == .gitlab, (options.gitLabMode ?? .oauth) == .personalAccessToken {
+            var payload: [String: Any] = [
+                "personal_access_token": options.gitLabPersonalAccessToken?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            ]
+            let baseURL = options.gitLabBaseURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !baseURL.isEmpty {
+                payload["base_url"] = baseURL
+            }
+            try await apiClient.submitOAuthForm(
+                baseURL: managementBaseURL(),
+                key: manifest.managementKey,
+                provider: provider,
+                payload: payload
+            )
+            return OAuthLoginSession(provider: provider, authURL: "", state: "")
+        }
+
+        if provider == .iflow, (options.iflowMode ?? .browser) == .cookie {
+            try await apiClient.submitOAuthForm(
+                baseURL: managementBaseURL(),
+                key: manifest.managementKey,
+                provider: provider,
+                payload: [
+                    "cookie": options.iflowCookie?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                ]
+            )
+            return OAuthLoginSession(provider: provider, authURL: "", state: "")
+        }
+
+        var queryItems: [URLQueryItem] = []
+        switch provider {
+        case .gitlab:
+            let baseURL = options.gitLabBaseURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let clientID = options.gitLabClientID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let clientSecret = options.gitLabClientSecret?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !baseURL.isEmpty {
+                queryItems.append(URLQueryItem(name: "base_url", value: baseURL))
+            }
+            if !clientID.isEmpty {
+                queryItems.append(URLQueryItem(name: "client_id", value: clientID))
+            }
+            if !clientSecret.isEmpty {
+                queryItems.append(URLQueryItem(name: "client_secret", value: clientSecret))
+            }
+        case .kiro:
+            queryItems.append(URLQueryItem(name: "method", value: (options.kiroMethod ?? .google).rawValue))
+        default:
+            break
+        }
+
         let response = try await apiClient.startOAuth(
             baseURL: managementBaseURL(),
             key: manifest.managementKey,
-            provider: provider
+            provider: provider,
+            queryItems: queryItems
         )
 
         guard let authURL = response.url, let state = response.state else {

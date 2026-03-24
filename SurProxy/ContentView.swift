@@ -115,6 +115,9 @@ struct ContentView: View {
                 }
             )
         }
+        .sheet(item: $viewModel.oauthPromptState) { prompt in
+            oauthPromptSheet(prompt)
+        }
     }
 
     private var runtimeCard: some View {
@@ -203,7 +206,7 @@ struct ContentView: View {
                 Text("SurProxy delegates provider login to CLIProxyAPIPlus. Starting a login opens the upstream authorization URL in your browser, then SurProxy polls the management API and refreshes local state when the auth file is ready.")
                     .foregroundStyle(.secondary)
 
-                HStack(spacing: 12) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 12)], alignment: .leading, spacing: 12) {
                     ForEach(OAuthLoginProvider.allCases) { provider in
                         if provider == .codex {
                             Button(buttonTitle(for: provider)) {
@@ -253,6 +256,130 @@ struct ContentView: View {
                     }
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func oauthPromptSheet(_ prompt: OAuthLoginPromptState) -> some View {
+        NavigationStack {
+            Form {
+                switch prompt.provider {
+                case .gitlab:
+                    Section("GitLab OAuth") {
+                        Picker("Login Mode", selection: Binding(
+                            get: { viewModel.oauthPromptState?.gitLabMode ?? .oauth },
+                            set: { viewModel.oauthPromptState?.gitLabMode = $0 }
+                        )) {
+                            ForEach(GitLabLoginMode.allCases) { mode in
+                                Text(mode.title).tag(mode)
+                            }
+                        }
+                        TextField("Base URL (Optional)", text: Binding(
+                            get: { viewModel.oauthPromptState?.gitLabBaseURL ?? "" },
+                            set: { viewModel.oauthPromptState?.gitLabBaseURL = $0 }
+                        ))
+                        if (viewModel.oauthPromptState?.gitLabMode ?? .oauth) == .oauth {
+                            TextField("Client ID", text: Binding(
+                                get: { viewModel.oauthPromptState?.gitLabClientID ?? "" },
+                                set: { viewModel.oauthPromptState?.gitLabClientID = $0 }
+                            ))
+                            SecureField("Client Secret (Optional)", text: Binding(
+                                get: { viewModel.oauthPromptState?.gitLabClientSecret ?? "" },
+                                set: { viewModel.oauthPromptState?.gitLabClientSecret = $0 }
+                            ))
+                            Text("CLIProxyAPIPlus requires a GitLab OAuth client ID for the browser-based login flow.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            SecureField("Personal Access Token", text: Binding(
+                                get: { viewModel.oauthPromptState?.gitLabPersonalAccessToken ?? "" },
+                                set: { viewModel.oauthPromptState?.gitLabPersonalAccessToken = $0 }
+                            ))
+                            Text("Paste a GitLab PAT and SurProxy will import it through CLIProxyAPIPlus without opening a browser.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                case .iflow:
+                    Section("iFlow Login") {
+                        Picker("Login Mode", selection: Binding(
+                            get: { viewModel.oauthPromptState?.iflowMode ?? .browser },
+                            set: { viewModel.oauthPromptState?.iflowMode = $0 }
+                        )) {
+                            ForEach(IFlowLoginMode.allCases) { mode in
+                                Text(mode.title).tag(mode)
+                            }
+                        }
+                        if (viewModel.oauthPromptState?.iflowMode ?? .browser) == .cookie {
+                            TextField("Cookie", text: Binding(
+                                get: { viewModel.oauthPromptState?.iflowCookie ?? "" },
+                                set: { viewModel.oauthPromptState?.iflowCookie = $0 }
+                            ), axis: .vertical)
+                            .lineLimit(4...8)
+                            Text("Paste the full browser cookie string. CLIProxyAPIPlus will normalize and import it directly.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("Browser mode opens the upstream iFlow login page and waits for CLIProxyAPIPlus to finish the auth flow.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                case .kiro:
+                    Section("Kiro Login") {
+                        Picker("Method", selection: Binding(
+                            get: { viewModel.oauthPromptState?.kiroMethod ?? .google },
+                            set: { viewModel.oauthPromptState?.kiroMethod = $0 }
+                        )) {
+                            ForEach([KiroLoginMethod.google, .github]) { method in
+                                Text(method.title).tag(method)
+                            }
+                        }
+                        Text("SurProxy currently exposes the browser-based Kiro flows here.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                default:
+                    EmptyView()
+                }
+            }
+            .formStyle(.grouped)
+            .navigationTitle(prompt.provider.title)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        viewModel.oauthPromptState = nil
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Continue") {
+                        viewModel.submitOAuthPrompt()
+                    }
+                    .disabled(isOAuthPromptInvalid(prompt.provider))
+                }
+            }
+        }
+        .frame(minWidth: 420, minHeight: 220)
+    }
+
+    private func isOAuthPromptInvalid(_ provider: OAuthLoginProvider) -> Bool {
+        switch provider {
+        case .gitlab:
+            let mode = viewModel.oauthPromptState?.gitLabMode ?? .oauth
+            if mode == .oauth {
+                return viewModel.oauthPromptState?.gitLabClientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true
+            }
+            return viewModel.oauthPromptState?.gitLabPersonalAccessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true
+        case .iflow:
+            let mode = viewModel.oauthPromptState?.iflowMode ?? .browser
+            if mode == .cookie {
+                return viewModel.oauthPromptState?.iflowCookie.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true
+            }
+            return false
+        case .kiro:
+            return false
+        default:
+            return false
         }
     }
 

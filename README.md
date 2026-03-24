@@ -97,6 +97,14 @@ Important behavior:
 - `/v0/management/codex-auth-url`
 - `/v0/management/anthropic-auth-url`
 - `/v0/management/gemini-cli-auth-url`
+- `/v0/management/gitlab-auth-url`
+- `/v0/management/antigravity-auth-url`
+- `/v0/management/qwen-auth-url`
+- `/v0/management/kilo-auth-url`
+- `/v0/management/kimi-auth-url`
+- `/v0/management/iflow-auth-url`
+- `/v0/management/kiro-auth-url`
+- `/v0/management/github-auth-url`
 - `/v0/management/get-auth-status`
 
 ## Important Packaging Note
@@ -121,6 +129,12 @@ Leaving sandbox enabled caused localhost `Operation not permitted` failures.
 - Menu bar opening now defers `openWindow` and `NSApp.activate` to the next main-thread turn to avoid AppKit layout recursion warnings while the menu is still collapsing.
 - Provider save behavior previously looked stale because UI toggles were reading old per-model state instead of the provider's selected model set. The provider model rows are now rendered from the provider's selected models, and save completion rereads provider state from management APIs.
 - Downstream API Key management is provided by upstream `/v0/management/api-keys`; adding a key must use the `PATCH` shape with both `old` and `new` fields because upstream string-list patch handlers reject a body that only contains `new`.
+- The OAuth login area now covers the broader upstream `GET` login set instead of only Codex, Anthropic, and Gemini.
+- Providers that need extra input now use a native prompt sheet before SurProxy continues the upstream flow.
+- Current prompt-backed flows:
+  - GitLab: choose OAuth or PAT import, with optional base URL and OAuth/PAT-specific fields
+  - iFlow: choose browser login or direct cookie import
+  - Kiro: choose the browser-based Google or GitHub flow before opening the upstream auth URL
 
 ## Remaining Work
 
