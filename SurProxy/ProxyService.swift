@@ -267,7 +267,7 @@ final class ProxyService: ProxyServicing {
         if managementReachable {
             next.binary.latestVersion = try? await apiClient.latestVersion(baseURL: baseURL, key: manifest.managementKey)
             if let authFiles = try? await apiClient.authFiles(baseURL: baseURL, key: manifest.managementKey), !authFiles.isEmpty {
-                next.oauthProfiles = authFiles.map(Self.mapAuthFile)
+                next.oauthProfiles = try await enrichAuthProfiles(authFiles, baseURL: baseURL)
             } else {
                 next.oauthProfiles = Self.loadAuthFilesFromDisk(at: paths.authDirectory, fileManager: fileManager)
             }
@@ -291,6 +291,32 @@ final class ProxyService: ProxyServicing {
 
     private func managementBaseURL() -> URL {
         URL(string: "http://127.0.0.1:\(manifest.port)/\(managementBasePath)/")!
+    }
+
+    private func enrichAuthProfiles(_ authFiles: [ManagementAuthFile], baseURL: URL) async throws -> [OAuthProfile] {
+        var profiles: [OAuthProfile] = []
+        profiles.reserveCapacity(authFiles.count)
+
+        for file in authFiles {
+            var profile = Self.mapAuthFile(file)
+            if let name = file.name, !name.isEmpty {
+                if let models = try? await apiClient.authFileModels(baseURL: baseURL, key: manifest.managementKey, name: name), !models.isEmpty {
+                    profile.models = Self.mapAvailableModels(models)
+                } else {
+                    let channels = Self.modelDefinitionCandidates(for: file)
+                    for channel in channels {
+                        if let fallbackModels = try? await apiClient.staticModelDefinitions(baseURL: baseURL, key: manifest.managementKey, channel: channel),
+                           !fallbackModels.isEmpty {
+                            profile.models = Self.mapAvailableModels(fallbackModels)
+                            break
+                        }
+                    }
+                }
+            }
+            profiles.append(profile)
+        }
+
+        return profiles
     }
 
     private static func loadOrBootstrapManifest(paths: RuntimePaths, runtimeManager: RuntimeManager) -> RuntimeManifest {
@@ -376,8 +402,53 @@ final class ProxyService: ProxyServicing {
             detailDescription: detailParts.joined(separator: " · "),
             email: email,
             account: account,
-            note: trimmed(file.note)
+            note: trimmed(file.note),
+            models: []
         )
+    }
+
+    nonisolated private static func mapAvailableModels(_ models: [ManagementAuthFileModel]) -> [AvailableModel] {
+        models.map {
+            AvailableModel(
+                id: $0.id,
+                displayName: $0.displayName,
+                type: $0.type,
+                ownedBy: $0.ownedBy
+            )
+        }
+    }
+
+    nonisolated private static func modelDefinitionCandidates(for file: ManagementAuthFile) -> [String] {
+        var seen = Set<String>()
+        var candidates: [String] = []
+
+        func append(_ raw: String?) {
+            guard let raw else { return }
+            let normalized = raw
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            guard !normalized.isEmpty else { return }
+            if seen.insert(normalized).inserted {
+                candidates.append(normalized)
+            }
+        }
+
+        append(file.provider)
+        append(file.type)
+        append(file.id)
+        append(file.accountType)
+
+        if let fileName = trimmed(file.name) {
+            let base = fileName.replacingOccurrences(of: ".json", with: "")
+            append(base)
+            append(base.split(separator: "-").first.map(String.init))
+        }
+
+        if let email = trimmed(file.email), !email.isEmpty {
+            append(email.split(separator: "@").first.map(String.init))
+        }
+
+        return candidates
     }
 
     private static func mapProviders(from config: [String: Any]) -> [ProviderRoute] {

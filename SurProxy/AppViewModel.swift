@@ -132,6 +132,12 @@ final class AppViewModel: ObservableObject {
         service.shutdown()
     }
 
+    func copyModelID(_ modelID: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(modelID, forType: .string)
+    }
+
     private func performMutation(_ operation: @escaping () async throws -> ProxyStatusSnapshot) async {
         isLoading = true
         defer { isLoading = false }

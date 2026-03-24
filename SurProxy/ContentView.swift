@@ -9,6 +9,7 @@ import SwiftUI
 
 struct ContentView: View {
     @ObservedObject var viewModel: AppViewModel
+    @State private var expandedModelGroups: Set<UUID> = []
 
     var body: some View {
         NavigationSplitView {
@@ -132,52 +133,109 @@ struct ContentView: View {
                     Text("No OAuth files detected yet. Start a provider login above and CLIProxyAPIPlus will create the auth file in its managed auth directory.")
                         .foregroundStyle(.secondary)
                 } else {
-                    ForEach(Array(viewModel.snapshot.oauthProfiles.enumerated()), id: \.element.id) { _, profile in
-                        HStack(alignment: .top, spacing: 12) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack {
-                                    Text(profile.displayName)
-                                        .font(.headline)
-                                    Text(profile.provider)
-                                        .foregroundStyle(.secondary)
-                                }
-
-                                Text(profile.fileName)
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-
-                                Text(profile.statusDescription)
-                                    .font(.caption)
-                                    .foregroundStyle(profile.isValid ? Color.secondary : Color.red)
-
-                                Text(profile.detailDescription)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-
-                            Spacer()
-
-                            Toggle(
-                                profile.isActive ? "Active" : "Disabled",
-                                isOn: Binding(
-                                    get: { profile.isActive },
-                                    set: { newValue in
-                                        Task { await viewModel.setOAuthProfile(id: profile.id, isActive: newValue) }
-                                    }
-                                )
-                            )
-                            .toggleStyle(.switch)
-                            .disabled(viewModel.isLoading)
-                        }
-                        .padding(.vertical, 4)
-
-                        if profile.id != viewModel.snapshot.oauthProfiles.last?.id {
-                            Divider()
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 320, maximum: 520), spacing: 16)], alignment: .leading, spacing: 16) {
+                        ForEach(viewModel.snapshot.oauthProfiles) { profile in
+                            oauthProfileCard(profile)
                         }
                     }
                 }
             }
         }
+    }
+
+    private func oauthProfileCard(_ profile: OAuthProfile) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(profile.displayName)
+                            .font(.headline)
+                        Text(profile.provider)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Text(profile.fileName)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+
+                    Text(profile.statusDescription)
+                        .font(.caption)
+                        .foregroundStyle(profile.isValid ? Color.secondary : Color.red)
+
+                    Text(profile.detailDescription)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 8)
+
+                Toggle(
+                    profile.isActive ? "Active" : "Disabled",
+                    isOn: Binding(
+                        get: { profile.isActive },
+                        set: { newValue in
+                            Task { await viewModel.setOAuthProfile(id: profile.id, isActive: newValue) }
+                        }
+                    )
+                )
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .disabled(viewModel.isLoading)
+            }
+
+            if !profile.models.isEmpty {
+                DisclosureGroup(
+                    isExpanded: Binding(
+                        get: { expandedModelGroups.contains(profile.id) },
+                        set: { isExpanded in
+                            if isExpanded {
+                                expandedModelGroups.insert(profile.id)
+                            } else {
+                                expandedModelGroups.remove(profile.id)
+                            }
+                        }
+                    )
+                ) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(profile.models) { model in
+                            HStack(spacing: 8) {
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(model.id)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .lineLimit(1)
+                                        .textSelection(.enabled)
+                                    if !model.subtitle.isEmpty {
+                                        Text(model.subtitle)
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                }
+
+                                Spacer(minLength: 8)
+
+                                Button("Copy") {
+                                    viewModel.copyModelID(model.id)
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.mini)
+                                .disabled(viewModel.isLoading)
+                            }
+                            .padding(.vertical, 2)
+                        }
+                    }
+                    .padding(.top, 4)
+                } label: {
+                    Text("Available Models (\(profile.models.count))")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.secondary.opacity(0.07))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
     private var oauthLoginCard: some View {

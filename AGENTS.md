@@ -24,7 +24,9 @@ Important upstream APIs currently used by SurProxy:
 - `/v0/management/config`
 - `/v0/management/latest-version`
 - `/v0/management/auth-files`
+- `/v0/management/auth-files/models`
 - `/v0/management/auth-files/status`
+- `/v0/management/model-definitions/:channel`
 - `/v0/management/codex-auth-url`
 - `/v0/management/anthropic-auth-url`
 - `/v0/management/gemini-cli-auth-url`
@@ -79,6 +81,11 @@ Important upstream APIs currently used by SurProxy:
   - `note`
 - Fallback source: direct scan of `~/.cli-proxy-api/*.json` when management API returns an empty list or parsing yields no usable auth entries
 - This fallback exists because empty UI state is worse than partial local visibility when the runtime API shape drifts or returns incomplete data
+- For model lists under each OAuth card:
+  - primary source: `GET /v0/management/auth-files/models?name=...`
+  - secondary source: dynamic probing of `GET /v0/management/model-definitions/:channel`
+  - channel probing is derived from auth-provided identifiers such as `provider`, `type`, `id`, `account_type`, filename, and email prefix
+  - do not reintroduce a hardcoded provider-to-channel mapping table unless upstream makes dynamic resolution impossible and the user explicitly approves that tradeoff
 
 ### Packaged runtime
 
@@ -215,6 +222,9 @@ Current display behavior:
 
 - OAuth files prefer upstream management API state when available
 - if the management API path fails, SurProxy still shows locally discovered auth files from disk
+- each OAuth card can show copyable model IDs from upstream
+- OAuth cards are rendered in an adaptive multi-column grid based on available window width
+- model lists use a collapsed disclosure style by default to reduce vertical space
 - provider routing is currently read-only summary UI; it is not a true config editor yet
 - provider summary depends on the real upstream config, so if provider entries disappear after reload it usually indicates config was overwritten rather than a UI-only problem
 
