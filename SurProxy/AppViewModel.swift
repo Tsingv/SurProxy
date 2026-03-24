@@ -14,6 +14,7 @@ final class AppViewModel: ObservableObject {
     @Published var snapshot = ProxyStatusSnapshot.bootstrap()
     @Published var isLoading = false
     @Published var lastErrorMessage: String?
+    @Published var providerSaveNotice: String?
     @Published var oauthInFlightProvider: OAuthLoginProvider?
     @Published var providerDraft = ProviderDraft()
     @Published var providerDraftValidation = ProviderDraftValidation()
@@ -24,6 +25,10 @@ final class AppViewModel: ObservableObject {
 
     private let service: ProxyServicing
     private var providerModelLoadGeneration: Int = 0
+
+    private func debugLog(_ message: String) {
+        print("[SurProxyDebug] \(message)")
+    }
 
     init(service: ProxyServicing) {
         self.service = service
@@ -42,6 +47,7 @@ final class AppViewModel: ObservableObject {
             pendingProviderSelectedModels = [:]
             syncProviderNameDrafts()
             lastErrorMessage = nil
+            providerSaveNotice = nil
         } catch {
             lastErrorMessage = error.localizedDescription
             do {
@@ -123,13 +129,13 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    func setProvider(id: UUID, isEnabled: Bool) async {
+    func setProvider(id: String, isEnabled: Bool) async {
         await performMutation { [self] in
             try await self.service.setProvider(id: id, isEnabled: isEnabled)
         }
     }
 
-    func setProviderModel(providerID: UUID, modelID: String, isEnabled: Bool) async {
+    func setProviderModel(providerID: String, modelID: String, isEnabled: Bool) async {
         guard let provider = snapshot.providers.first(where: { $0.id == providerID }) else {
             return
         }
@@ -160,11 +166,26 @@ final class AppViewModel: ObservableObject {
         let changes = pendingProviderSelectedModels
         guard !changes.isEmpty else { return }
         providerModelLoadGeneration += 1
+        let generation = providerModelLoadGeneration
+        debugLog("saveProviderChanges pending=\(changes.mapValues { Array($0).sorted() }) generation=\(generation)")
+        providerSaveNotice = nil
 
         await performMutation { [self] in
             try await self.service.saveProviderModelStates(changes)
         }
-        pendingProviderSelectedModels = [:]
+        if generation == providerModelLoadGeneration {
+            pendingProviderSelectedModels = [:]
+        }
+        if lastErrorMessage == nil {
+            providerSaveNotice = "Provider changes have been saved. CLIProxyAPIPlus may take a few seconds to reflect the final model state. Re-expand the model list to refresh if needed."
+            Task {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                if providerSaveNotice != nil {
+                    providerSaveNotice = nil
+                }
+            }
+        }
+        debugLog("saveProviderChanges finished generation=\(generation) providers=\(snapshot.providers.map { "\($0.stableKey)=\($0.selectedModels.sorted())" })")
     }
 
     var hasPendingProviderChanges: Bool {
@@ -185,7 +206,7 @@ final class AppViewModel: ObservableObject {
                 }
                 if let providerIndex = snapshot.providers.firstIndex(where: { $0.stableKey == stableKey }) {
                     var provider = snapshot.providers[providerIndex]
-                    let selected = pendingProviderSelectedModels[stableKey] ?? provider.selectedModels
+                    let selected = pendingProviderSelectedModels[stableKey] ?? Set(models.filter(\.isEnabled).map(\.id))
                     provider.selectedModels = selected
                     provider.models = models.map { model in
                         var updated = model
@@ -194,6 +215,7 @@ final class AppViewModel: ObservableObject {
                     }
                     provider.modelCount = provider.models.count
                     snapshot.providers[providerIndex] = provider
+                    debugLog("loadProviderModels applied stableKey=\(stableKey) selected=\(selected.sorted())")
                 }
                 lastErrorMessage = nil
             } catch {

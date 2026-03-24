@@ -40,7 +40,7 @@ private enum SidebarSection: String, CaseIterable, Identifiable, Hashable {
 struct ContentView: View {
     @ObservedObject var viewModel: AppViewModel
     @State private var expandedModelGroups: Set<UUID> = []
-    @State private var expandedProviderModelGroups: Set<UUID> = []
+    @State private var expandedProviderModelGroups: Set<String> = []
     @State private var selectedSection: SidebarSection? = .status
 
     var body: some View {
@@ -76,6 +76,21 @@ struct ContentView: View {
                     .controlSize(.large)
                     .padding(20)
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+            }
+            if let providerSaveNotice = viewModel.providerSaveNotice {
+                VStack {
+                    Spacer()
+                    Text(providerSaveNotice)
+                        .font(.callout)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                        .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
+                        .padding(.bottom, 24)
+                }
+                .padding(.horizontal, 24)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
         .alert(item: Binding(

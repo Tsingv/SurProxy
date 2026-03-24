@@ -12,8 +12,8 @@ protocol ProxyServicing {
     func setRuntimeState(_ state: ProxyRuntimeState) async throws -> ProxyStatusSnapshot
     func setOAuthProfile(id: UUID, isActive: Bool) async throws -> ProxyStatusSnapshot
     func deleteOAuthProfile(id: UUID) async throws -> ProxyStatusSnapshot
-    func setProvider(id: UUID, isEnabled: Bool) async throws -> ProxyStatusSnapshot
-    func setProviderModel(providerID: UUID, modelID: String, isEnabled: Bool) async throws -> ProxyStatusSnapshot
+    func setProvider(id: String, isEnabled: Bool) async throws -> ProxyStatusSnapshot
+    func setProviderModel(providerID: String, modelID: String, isEnabled: Bool) async throws -> ProxyStatusSnapshot
     func loadProviderModels(stableKey: String) async throws -> [ProviderModel]
     func saveProviderModelStates(_ changes: [String: Set<String>]) async throws -> ProxyStatusSnapshot
     func renameProvider(stableKey: String, newName: String) async throws -> ProxyStatusSnapshot
@@ -37,6 +37,10 @@ final class ProxyService: ProxyServicing {
     private var paths: RuntimePaths
     private var manifest: RuntimeManifest
     private var providerModelCache: [String: [ProviderModel]] = [:]
+
+    private func debugLog(_ message: String) {
+        print("[SurProxyDebug] \(message)")
+    }
 
     init(
         runtimeManager: RuntimeManager = RuntimeManager(),
@@ -119,7 +123,7 @@ final class ProxyService: ProxyServicing {
         return try await refreshSnapshot()
     }
 
-    func setProvider(id: UUID, isEnabled: Bool) async throws -> ProxyStatusSnapshot {
+    func setProvider(id: String, isEnabled: Bool) async throws -> ProxyStatusSnapshot {
         guard let provider = snapshot.providers.first(where: { $0.id == id }) else {
             return snapshot
         }
@@ -130,7 +134,7 @@ final class ProxyService: ProxyServicing {
         )
     }
 
-    func setProviderModel(providerID: UUID, modelID: String, isEnabled: Bool) async throws -> ProxyStatusSnapshot {
+    func setProviderModel(providerID: String, modelID: String, isEnabled: Bool) async throws -> ProxyStatusSnapshot {
         _ = providerID
         _ = modelID
         _ = isEnabled
@@ -145,22 +149,18 @@ final class ProxyService: ProxyServicing {
             return []
         }
 
-        let entries = try await apiClient.providerEntries(
+        let resolved = try await resolveProviderState(
             baseURL: managementBaseURL(),
-            key: manifest.managementKey,
-            configKey: provider.configKey
+            configKey: provider.configKey,
+            entryIndex: provider.entryIndex
         )
-        guard provider.entryIndex >= 0, provider.entryIndex < entries.count else {
-            return provider.models
-        }
-
-        let entry = entries[provider.entryIndex]
-        let discoveredModels = await Self.resolveProviderModels(entry: entry, configKey: provider.configKey, apiClient: apiClient)
-        let models = Self.mapProviderModels(discoveredModels, configuredModels: entry.configuredModels)
+        debugLog("loadProviderModels stableKey=\(stableKey) selected=\(resolved.selectedModels.sorted()) models=\(resolved.models.map { $0.id })")
+        let models = resolved.models
+        let selectedModels = resolved.selectedModels
         providerModelCache[stableKey] = models
 
         if let snapshotIndex = snapshot.providers.firstIndex(where: { $0.stableKey == stableKey }) {
-            snapshot.providers[snapshotIndex].selectedModels = Set(entry.configuredModels.map(\.id))
+            snapshot.providers[snapshotIndex].selectedModels = selectedModels
             snapshot.providers[snapshotIndex].models = models
             snapshot.providers[snapshotIndex].modelCount = models.count
         }
@@ -171,6 +171,9 @@ final class ProxyService: ProxyServicing {
     func saveProviderModelStates(_ changes: [String: Set<String>]) async throws -> ProxyStatusSnapshot {
         try prepareRuntime()
         try await ensureManagementReady()
+
+        var expectedSelections: [String: Set<String>] = [:]
+        debugLog("saveProviderModelStates changes=\(changes.mapValues { Array($0).sorted() })")
 
         let grouped = Dictionary(grouping: changes.keys.compactMap { stableKey in
             snapshot.providers.first(where: { $0.stableKey == stableKey })
@@ -186,6 +189,8 @@ final class ProxyService: ProxyServicing {
                 for provider in providers {
                     guard provider.entryIndex >= 0, provider.entryIndex < entries.count else { continue }
                     let selectedModels = changes[provider.stableKey] ?? provider.selectedModels
+                    expectedSelections[provider.stableKey] = selectedModels
+                    debugLog("save start stableKey=\(provider.stableKey) configKey=\(configKey) entryIndex=\(provider.entryIndex) target=\(selectedModels.sorted())")
                     var raw = entries[provider.entryIndex].rawObject
                     raw["models"] = Self.providerModelsPayload(from: selectedModels)
                     raw.removeValue(forKey: "excluded-models")
@@ -213,15 +218,14 @@ final class ProxyService: ProxyServicing {
                 for provider in providers {
                     guard provider.entryIndex >= 0, provider.entryIndex < entries.count else { continue }
                     let selectedModels = changes[provider.stableKey] ?? provider.selectedModels
-                    var raw = entries[provider.entryIndex].rawObject
-                    raw["models"] = Self.providerModelsPayload(from: selectedModels)
-                    raw.removeValue(forKey: "excluded-models")
-                    try await apiClient.patchProviderEntry(
+                    expectedSelections[provider.stableKey] = selectedModels
+                    debugLog("patch models stableKey=\(provider.stableKey) configKey=\(configKey) entryIndex=\(provider.entryIndex) target=\(selectedModels.sorted())")
+                    try await apiClient.patchProviderModels(
                         baseURL: managementBaseURL(),
                         key: manifest.managementKey,
                         configKey: configKey,
                         index: provider.entryIndex,
-                        value: raw
+                        models: Self.providerModelsPayload(from: selectedModels)
                     )
                 }
             }
@@ -231,18 +235,23 @@ final class ProxyService: ProxyServicing {
                 key: manifest.managementKey,
                 configKey: configKey
             )
+            debugLog("providerEntries after save configKey=\(configKey) entries=\(updatedEntries.enumerated().map { "#\($0.offset)=\($0.element.configuredModels.map { $0.id })" })")
             for provider in providers {
                 guard provider.entryIndex >= 0, provider.entryIndex < updatedEntries.count else { continue }
-                let configuredModels = updatedEntries[provider.entryIndex].configuredModels
-                let selectedModels = Set(configuredModels.map(\.id))
-                if let cached = providerModelCache[provider.stableKey], !cached.isEmpty {
-                    providerModelCache[provider.stableKey] = cached.map { model in
-                        var updated = model
-                        updated.isEnabled = selectedModels.contains(model.id)
-                        return updated
-                    }
-                } else {
-                    providerModelCache[provider.stableKey] = Self.mapProviderModels([], configuredModels: configuredModels)
+                let expected = expectedSelections[provider.stableKey] ?? []
+                let resolved = try await waitForProviderState(
+                    baseURL: managementBaseURL(),
+                    configKey: configKey,
+                    entryIndex: provider.entryIndex,
+                    expectedSelectedModels: expected
+                )
+                debugLog("resolved provider state stableKey=\(provider.stableKey) expected=\(expected.sorted()) actual=\(resolved.selectedModels.sorted())")
+                providerModelCache[provider.stableKey] = resolved.models
+                if let snapshotIndex = snapshot.providers.firstIndex(where: { $0.stableKey == provider.stableKey }) {
+                    snapshot.providers[snapshotIndex].selectedModels = resolved.selectedModels
+                    snapshot.providers[snapshotIndex].models = resolved.models
+                    snapshot.providers[snapshotIndex].modelCount = resolved.models.count
+                    debugLog("snapshot provider updated stableKey=\(provider.stableKey) selected=\(snapshot.providers[snapshotIndex].selectedModels.sorted())")
                 }
             }
         }
@@ -559,7 +568,7 @@ final class ProxyService: ProxyServicing {
                 let cachedModels = cachedProviderModels(for: stableKey, configuredModels: effectiveConfiguredModels)
                 routes.append(
                     ProviderRoute(
-                        id: UUID(),
+                        id: stableKey,
                         stableKey: stableKey,
                         name: routeName,
                         kindTitle: item.title,
@@ -578,6 +587,59 @@ final class ProxyService: ProxyServicing {
         }
 
         return routes
+    }
+
+    private func resolveProviderState(baseURL: URL, configKey: String, entryIndex: Int) async throws -> (selectedModels: Set<String>, models: [ProviderModel]) {
+        let entries = try await apiClient.providerEntries(
+            baseURL: baseURL,
+            key: manifest.managementKey,
+            configKey: configKey
+        )
+        guard entryIndex >= 0, entryIndex < entries.count else {
+            return ([], [])
+        }
+
+        let entry = entries[entryIndex]
+        let configuredModels = entry.configuredModels
+        let discoveredModels = await Self.resolveProviderModels(entry: entry, configKey: configKey, apiClient: apiClient)
+        let mergedModels = Self.mergeProviderModels(
+            discoveredModels: discoveredModels,
+            configuredModels: configuredModels
+        )
+        return (Set(configuredModels.map(\.id)), mergedModels)
+    }
+
+    private func waitForProviderState(
+        baseURL: URL,
+        configKey: String,
+        entryIndex: Int,
+        expectedSelectedModels: Set<String>
+    ) async throws -> (selectedModels: Set<String>, models: [ProviderModel]) {
+        let deadline = Date().addingTimeInterval(6)
+        var lastResolved = try await resolveProviderState(
+            baseURL: baseURL,
+            configKey: configKey,
+            entryIndex: entryIndex
+        )
+        debugLog("waitForProviderState initial configKey=\(configKey) entryIndex=\(entryIndex) expected=\(expectedSelectedModels.sorted()) actual=\(lastResolved.selectedModels.sorted())")
+        if lastResolved.selectedModels == expectedSelectedModels {
+            return lastResolved
+        }
+
+        while Date() < deadline {
+            try await Task.sleep(for: .milliseconds(250))
+            lastResolved = try await resolveProviderState(
+                baseURL: baseURL,
+                configKey: configKey,
+                entryIndex: entryIndex
+            )
+            debugLog("waitForProviderState retry configKey=\(configKey) entryIndex=\(entryIndex) expected=\(expectedSelectedModels.sorted()) actual=\(lastResolved.selectedModels.sorted())")
+            if lastResolved.selectedModels == expectedSelectedModels {
+                return lastResolved
+            }
+        }
+
+        return lastResolved
     }
 
     private static func loadOrBootstrapManifest(paths: RuntimePaths, runtimeManager: RuntimeManager) -> RuntimeManifest {
@@ -679,26 +741,39 @@ final class ProxyService: ProxyServicing {
         }
     }
 
-    nonisolated private static func mapProviderModels(_ models: [ManagementAuthFileModel], configuredModels: [ManagementAuthFileModel]) -> [ProviderModel] {
+    nonisolated private static func mergeProviderModels(discoveredModels: [ManagementAuthFileModel], configuredModels: [ManagementAuthFileModel]) -> [ProviderModel] {
         let selected = Set(configuredModels.map(\.id))
-        var merged: [String: ManagementAuthFileModel] = [:]
-        for model in models {
-            merged[model.id] = model
-        }
-        for model in configuredModels {
-            merged[model.id] = merged[model.id] ?? model
-        }
-        let discoveredIDs = Set(models.map(\.id))
-        return merged.values.sorted { $0.id < $1.id }.map {
-            ProviderModel(
-                id: $0.id,
-                displayName: $0.displayName,
-                type: $0.type,
-                ownedBy: $0.ownedBy,
-                isEnabled: selected.contains($0.id),
-                isDeprecated: !discoveredIDs.isEmpty && !discoveredIDs.contains($0.id)
+        let discoveredIDs = Set(discoveredModels.map(\.id))
+        var merged: [String: ProviderModel] = [:]
+
+        for model in discoveredModels {
+            merged[model.id] = ProviderModel(
+                id: model.id,
+                displayName: model.displayName,
+                type: model.type,
+                ownedBy: model.ownedBy,
+                isEnabled: selected.contains(model.id),
+                isDeprecated: false
             )
         }
+
+        for model in configuredModels {
+            if var existing = merged[model.id] {
+                existing.isEnabled = true
+                merged[model.id] = existing
+            } else {
+                merged[model.id] = ProviderModel(
+                    id: model.id,
+                    displayName: model.displayName,
+                    type: model.type,
+                    ownedBy: model.ownedBy,
+                    isEnabled: true,
+                    isDeprecated: !discoveredIDs.isEmpty
+                )
+            }
+        }
+
+        return merged.values.sorted { $0.id < $1.id }
     }
 
     nonisolated private static func modelDefinitionCandidates(for file: ManagementAuthFile) -> [String] {
@@ -741,7 +816,7 @@ final class ProxyService: ProxyServicing {
             guard let items = config[key] as? [[String: Any]], !items.isEmpty else { return }
             providers.append(
                 ProviderRoute(
-                    id: UUID(),
+                    id: providerStableKey(configKey: key, entryIndex: 0),
                     stableKey: providerStableKey(configKey: key, entryIndex: 0),
                     name: name,
                     kindTitle: name,
@@ -812,7 +887,7 @@ final class ProxyService: ProxyServicing {
             guard itemCount > 0 else { continue }
             providers.append(
                 ProviderRoute(
-                    id: UUID(),
+                    id: providerStableKey(configKey: key, entryIndex: providers.count),
                     stableKey: providerStableKey(configKey: key, entryIndex: providers.count),
                     name: name,
                     kindTitle: name,
@@ -1058,42 +1133,24 @@ final class ProxyService: ProxyServicing {
         let configuredModels = models.compactMap { model -> ManagementAuthFileModel? in
             let alias = (model["alias"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
             let name = (model["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard let id = alias?.isEmpty == false ? alias : name, !id.isEmpty else {
+            let upstreamName = name?.isEmpty == false ? name : nil
+            let clientAlias = alias?.isEmpty == false ? alias : nil
+            guard let id = upstreamName ?? clientAlias, !id.isEmpty else {
                 return nil
             }
-            return ManagementAuthFileModel(id: id, displayName: name, type: model["type"] as? String, ownedBy: nil)
+            return ManagementAuthFileModel(id: id, displayName: clientAlias, type: model["type"] as? String, ownedBy: nil)
         }
         return configuredModels
     }
 
     private func cachedProviderModels(for stableKey: String, configuredModels: [ManagementAuthFileModel]) -> [ProviderModel] {
         guard let cached = providerModelCache[stableKey], !cached.isEmpty else {
-            return Self.mapProviderModels([], configuredModels: configuredModels)
+            return Self.mergeProviderModels(discoveredModels: [], configuredModels: configuredModels)
         }
-
-        let selected = Set(configuredModels.map(\.id))
-        var merged = Dictionary(uniqueKeysWithValues: cached.map { ($0.id, $0) })
-        for configured in configuredModels {
-            if var existing = merged[configured.id] {
-                existing.isEnabled = true
-                merged[configured.id] = existing
-            } else {
-                merged[configured.id] = ProviderModel(
-                    id: configured.id,
-                    displayName: configured.displayName,
-                    type: configured.type,
-                    ownedBy: configured.ownedBy,
-                    isEnabled: true,
-                    isDeprecated: true
-                )
-            }
+        let discoveredModels = cached.map {
+            ManagementAuthFileModel(id: $0.id, displayName: $0.displayName, type: $0.type, ownedBy: $0.ownedBy)
         }
-
-        return merged.values.sorted { $0.id < $1.id }.map { model in
-            var updated = model
-            updated.isEnabled = selected.contains(model.id)
-            return updated
-        }
+        return Self.mergeProviderModels(discoveredModels: discoveredModels, configuredModels: configuredModels)
     }
 
     nonisolated private static func stringFromDisk(_ raw: Any?) -> String? {

@@ -105,7 +105,7 @@ struct OAuthLoginSession {
 }
 
 struct ProviderRoute: Identifiable, Hashable {
-    let id: UUID
+    let id: String
     var stableKey: String
     var name: String
     var kindTitle: String
