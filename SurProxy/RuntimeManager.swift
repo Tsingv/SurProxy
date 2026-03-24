@@ -138,8 +138,8 @@ final class RuntimeManager {
         appendLog("[SurProxy] launching runtime: \(paths.activeBinary.path) --config \(paths.configFile.path)\n")
 
         let process = Process()
-        process.executableURL = paths.activeBinary
-        process.arguments = ["--config", paths.configFile.path]
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = ["-lc", supervisorCommand(binaryPath: paths.activeBinary.path, configPath: paths.configFile.path)]
         process.currentDirectoryURL = paths.appSupportDirectory
 
         let outputPipe = Pipe()
@@ -206,6 +206,27 @@ final class RuntimeManager {
         try fileManager.setAttributes(attributes, ofItemAtPath: url.path)
     }
 
+    private func supervisorCommand(binaryPath: String, configPath: String) -> String {
+        let parentPID = ProcessInfo.processInfo.processIdentifier
+        let escapedBinary = shellQuoted(binaryPath)
+        let escapedConfig = shellQuoted(configPath)
+        return """
+        parent_pid=\(parentPID)
+        \(escapedBinary) --config \(escapedConfig) &
+        child_pid=$!
+        trap 'kill "$child_pid" 2>/dev/null; wait "$child_pid" 2>/dev/null' TERM INT EXIT
+        while kill -0 "$parent_pid" 2>/dev/null && kill -0 "$child_pid" 2>/dev/null; do
+          sleep 1
+        done
+        kill "$child_pid" 2>/dev/null
+        wait "$child_pid"
+        """
+    }
+
+    private func shellQuoted(_ raw: String) -> String {
+        "'\(raw.replacingOccurrences(of: "'", with: "'\\''"))'"
+    }
+
     private static func defaultConfig(authDirectory: String, port: Int, managementKey: String) -> String {
         """
         host: '127.0.0.1'
@@ -264,7 +285,10 @@ final class RuntimeManager {
             "  disable-control-panel: true"
         ]
 
-        if let index = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == "remote-management:" }) {
+        if let index = lines.firstIndex(where: {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("remote-management:")
+        }) {
+            lines[index] = "remote-management:"
             var endIndex = index + 1
             while endIndex < lines.count {
                 let line = lines[endIndex]

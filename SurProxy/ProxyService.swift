@@ -11,7 +11,13 @@ protocol ProxyServicing {
     func loadSnapshot() async throws -> ProxyStatusSnapshot
     func setRuntimeState(_ state: ProxyRuntimeState) async throws -> ProxyStatusSnapshot
     func setOAuthProfile(id: UUID, isActive: Bool) async throws -> ProxyStatusSnapshot
+    func deleteOAuthProfile(id: UUID) async throws -> ProxyStatusSnapshot
     func setProvider(id: UUID, isEnabled: Bool) async throws -> ProxyStatusSnapshot
+    func setProviderModel(providerID: UUID, modelID: String, isEnabled: Bool) async throws -> ProxyStatusSnapshot
+    func loadProviderModels(stableKey: String) async throws -> [ProviderModel]
+    func saveProviderModelStates(_ changes: [String: Set<String>]) async throws -> ProxyStatusSnapshot
+    func renameProvider(stableKey: String, newName: String) async throws -> ProxyStatusSnapshot
+    func deleteProvider(stableKey: String) async throws -> ProxyStatusSnapshot
     func addProvider(_ draft: ProviderDraft) async throws -> ProxyStatusSnapshot
     func reloadConfiguration() async throws -> ProxyStatusSnapshot
     func reinstallBundledRuntime() async throws -> ProxyStatusSnapshot
@@ -30,6 +36,7 @@ final class ProxyService: ProxyServicing {
     private var snapshot = ProxyStatusSnapshot.bootstrap()
     private var paths: RuntimePaths
     private var manifest: RuntimeManifest
+    private var providerModelCache: [String: [ProviderModel]] = [:]
 
     init(
         runtimeManager: RuntimeManager = RuntimeManager(),
@@ -70,13 +77,13 @@ final class ProxyService: ProxyServicing {
         try prepareRuntime()
 
         switch state {
-        case .running:
+        case .starting, .running:
             if !runtimeManager.isRunning, await apiClient.healthCheck(baseURL: managementBaseURL(), key: manifest.managementKey) {
                 return try await refreshSnapshot()
             }
             try runtimeManager.start(paths: paths)
             try await waitForManagementReady()
-        case .stopped:
+        case .stopping, .stopped:
             runtimeManager.stop()
         case .degraded:
             break
@@ -98,6 +105,20 @@ final class ProxyService: ProxyServicing {
         return try await refreshSnapshot()
     }
 
+    func deleteOAuthProfile(id: UUID) async throws -> ProxyStatusSnapshot {
+        try prepareRuntime()
+        try await ensureManagementReady()
+        guard let profile = snapshot.oauthProfiles.first(where: { $0.id == id }) else {
+            return snapshot
+        }
+        try await apiClient.deleteAuthFile(
+            baseURL: managementBaseURL(),
+            key: manifest.managementKey,
+            name: profile.fileName
+        )
+        return try await refreshSnapshot()
+    }
+
     func setProvider(id: UUID, isEnabled: Bool) async throws -> ProxyStatusSnapshot {
         guard let provider = snapshot.providers.first(where: { $0.id == id }) else {
             return snapshot
@@ -107,6 +128,195 @@ final class ProxyService: ProxyServicing {
             code: 1,
             userInfo: [NSLocalizedDescriptionKey: "\(provider.name) is currently read-only in SurProxy. Update routing through CLIProxyAPIPlus config management first."]
         )
+    }
+
+    func setProviderModel(providerID: UUID, modelID: String, isEnabled: Bool) async throws -> ProxyStatusSnapshot {
+        _ = providerID
+        _ = modelID
+        _ = isEnabled
+        return snapshot
+    }
+
+    func loadProviderModels(stableKey: String) async throws -> [ProviderModel] {
+        try prepareRuntime()
+        try await ensureManagementReady()
+
+        guard let provider = snapshot.providers.first(where: { $0.stableKey == stableKey }) else {
+            return []
+        }
+
+        let entries = try await apiClient.providerEntries(
+            baseURL: managementBaseURL(),
+            key: manifest.managementKey,
+            configKey: provider.configKey
+        )
+        guard provider.entryIndex >= 0, provider.entryIndex < entries.count else {
+            return provider.models
+        }
+
+        let entry = entries[provider.entryIndex]
+        let discoveredModels = await Self.resolveProviderModels(entry: entry, configKey: provider.configKey, apiClient: apiClient)
+        let models = Self.mapProviderModels(discoveredModels, configuredModels: entry.configuredModels)
+        providerModelCache[stableKey] = models
+
+        if let snapshotIndex = snapshot.providers.firstIndex(where: { $0.stableKey == stableKey }) {
+            snapshot.providers[snapshotIndex].selectedModels = Set(entry.configuredModels.map(\.id))
+            snapshot.providers[snapshotIndex].models = models
+            snapshot.providers[snapshotIndex].modelCount = models.count
+        }
+
+        return models
+    }
+
+    func saveProviderModelStates(_ changes: [String: Set<String>]) async throws -> ProxyStatusSnapshot {
+        try prepareRuntime()
+        try await ensureManagementReady()
+
+        let grouped = Dictionary(grouping: changes.keys.compactMap { stableKey in
+            snapshot.providers.first(where: { $0.stableKey == stableKey })
+        }, by: \.configKey)
+
+        for (configKey, providers) in grouped {
+            var entries = try await apiClient.providerEntries(
+                baseURL: managementBaseURL(),
+                key: manifest.managementKey,
+                configKey: configKey
+            )
+            if configKey == "gemini-api-key" {
+                for provider in providers {
+                    guard provider.entryIndex >= 0, provider.entryIndex < entries.count else { continue }
+                    let selectedModels = changes[provider.stableKey] ?? provider.selectedModels
+                    var raw = entries[provider.entryIndex].rawObject
+                    raw["models"] = Self.providerModelsPayload(from: selectedModels)
+                    raw.removeValue(forKey: "excluded-models")
+                    let name = entries[provider.entryIndex].name
+                    let baseURL = entries[provider.entryIndex].baseURL
+                    let apiKey = entries[provider.entryIndex].apiKey
+                    let headers = entries[provider.entryIndex].headers
+                    entries[provider.entryIndex] = ManagementProviderEntry(
+                        name: name,
+                        baseURL: baseURL,
+                        apiKey: apiKey,
+                        headers: headers,
+                        configuredModels: Self.providerConfiguredModels(from: selectedModels),
+                        rawObject: raw
+                    )
+                }
+
+                try await apiClient.putProviderEntries(
+                    baseURL: managementBaseURL(),
+                    key: manifest.managementKey,
+                    configKey: configKey,
+                    entries: entries.map(\.rawObject)
+                )
+            } else {
+                for provider in providers {
+                    guard provider.entryIndex >= 0, provider.entryIndex < entries.count else { continue }
+                    let selectedModels = changes[provider.stableKey] ?? provider.selectedModels
+                    var raw = entries[provider.entryIndex].rawObject
+                    raw["models"] = Self.providerModelsPayload(from: selectedModels)
+                    raw.removeValue(forKey: "excluded-models")
+                    try await apiClient.patchProviderEntry(
+                        baseURL: managementBaseURL(),
+                        key: manifest.managementKey,
+                        configKey: configKey,
+                        index: provider.entryIndex,
+                        value: raw
+                    )
+                }
+            }
+
+            let updatedEntries = try await apiClient.providerEntries(
+                baseURL: managementBaseURL(),
+                key: manifest.managementKey,
+                configKey: configKey
+            )
+            for provider in providers {
+                guard provider.entryIndex >= 0, provider.entryIndex < updatedEntries.count else { continue }
+                let configuredModels = updatedEntries[provider.entryIndex].configuredModels
+                let selectedModels = Set(configuredModels.map(\.id))
+                if let cached = providerModelCache[provider.stableKey], !cached.isEmpty {
+                    providerModelCache[provider.stableKey] = cached.map { model in
+                        var updated = model
+                        updated.isEnabled = selectedModels.contains(model.id)
+                        return updated
+                    }
+                } else {
+                    providerModelCache[provider.stableKey] = Self.mapProviderModels([], configuredModels: configuredModels)
+                }
+            }
+        }
+
+        return try await refreshSnapshot()
+    }
+
+    func renameProvider(stableKey: String, newName: String) async throws -> ProxyStatusSnapshot {
+        try prepareRuntime()
+        try await ensureManagementReady()
+
+        guard let provider = snapshot.providers.first(where: { $0.stableKey == stableKey }) else {
+            return snapshot
+        }
+        guard provider.canRename else {
+            throw NSError(
+                domain: "SurProxy.Provider",
+                code: 6,
+                userInfo: [NSLocalizedDescriptionKey: "\(provider.kindTitle) entries do not expose a configurable name in CLIProxyAPIPlus."]
+            )
+        }
+
+        let trimmedName = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            throw NSError(
+                domain: "SurProxy.Provider",
+                code: 7,
+                userInfo: [NSLocalizedDescriptionKey: "Provider name cannot be empty."]
+            )
+        }
+
+        var entries = try await apiClient.providerEntries(
+            baseURL: managementBaseURL(),
+            key: manifest.managementKey,
+            configKey: provider.configKey
+        )
+        guard provider.entryIndex >= 0, provider.entryIndex < entries.count else {
+            return snapshot
+        }
+
+        var raw = entries[provider.entryIndex].rawObject
+        raw["name"] = trimmedName
+        let entry = entries[provider.entryIndex]
+        entries[provider.entryIndex] = ManagementProviderEntry(
+            name: trimmedName,
+            baseURL: entry.baseURL,
+            apiKey: entry.apiKey,
+            headers: entry.headers,
+            configuredModels: entry.configuredModels,
+            rawObject: raw
+        )
+
+        try await apiClient.putProviderEntries(
+            baseURL: managementBaseURL(),
+            key: manifest.managementKey,
+            configKey: provider.configKey,
+            entries: entries.map(\.rawObject)
+        )
+        return try await refreshSnapshot()
+    }
+
+    func deleteProvider(stableKey: String) async throws -> ProxyStatusSnapshot {
+        try prepareRuntime()
+        try await ensureManagementReady()
+        guard let provider = snapshot.providers.first(where: { $0.stableKey == stableKey }) else {
+            return snapshot
+        }
+        try await apiClient.deleteProviderEntry(
+            baseURL: managementBaseURL(),
+            key: manifest.managementKey,
+            configKey: provider.configKey,
+            index: provider.entryIndex
+        )
+        return try await refreshSnapshot()
     }
 
     func addProvider(_ draft: ProviderDraft) async throws -> ProxyStatusSnapshot {
@@ -271,13 +481,10 @@ final class ProxyService: ProxyServicing {
             } else {
                 next.oauthProfiles = Self.loadAuthFilesFromDisk(at: paths.authDirectory, fileManager: fileManager)
             }
+            let configObject = try? await apiClient.getConfig(baseURL: baseURL, key: manifest.managementKey)
             let configYAML = try? await apiClient.getConfigYAML(baseURL: baseURL, key: manifest.managementKey)
-            if let config = try? await apiClient.getConfig(baseURL: baseURL, key: manifest.managementKey) {
-                next.providers = Self.mapProviders(from: config)
-                if next.providers.isEmpty, let configYAML {
-                    next.providers = Self.mapProviders(fromYAML: configYAML)
-                }
-            } else if let configYAML {
+            next.providers = await enrichProviders(baseURL: baseURL, configObject: configObject, configYAML: configYAML)
+            if next.providers.isEmpty, let configYAML {
                 next.providers = Self.mapProviders(fromYAML: configYAML)
             }
         } else {
@@ -317,6 +524,60 @@ final class ProxyService: ProxyServicing {
         }
 
         return profiles
+    }
+
+    private func enrichProviders(baseURL: URL, configObject: [String: Any]?, configYAML: String?) async -> [ProviderRoute] {
+        let providerKinds: [(configKey: String, title: String)] = [
+            ("gemini-api-key", "Gemini API Keys"),
+            ("claude-api-key", "Claude API Keys"),
+            ("codex-api-key", "Codex API Keys"),
+            ("openai-compatibility", "OpenAI Compatibility"),
+            ("vertex-api-key", "Vertex API Keys")
+        ]
+
+        var routes: [ProviderRoute] = []
+        for item in providerKinds {
+            guard let entries = try? await apiClient.providerEntries(
+                baseURL: baseURL,
+                key: manifest.managementKey,
+                configKey: item.configKey
+            ) else {
+                continue
+            }
+
+            for (index, entry) in entries.enumerated() {
+                let stableKey = Self.providerStableKey(configKey: item.configKey, entryIndex: index)
+                let configConfiguredModels = configObject.flatMap { Self.providerConfiguredModels(from: $0, configKey: item.configKey, entryIndex: index) } ?? []
+                let effectiveConfiguredModels = entry.configuredModels.isEmpty ? configConfiguredModels : entry.configuredModels
+                let routeName = Self.providerRouteName(
+                    configKey: item.configKey,
+                    kindTitle: item.title,
+                    entryName: entry.name,
+                    baseURL: entry.baseURL,
+                    index: index
+                )
+                let cachedModels = cachedProviderModels(for: stableKey, configuredModels: effectiveConfiguredModels)
+                routes.append(
+                    ProviderRoute(
+                        id: UUID(),
+                        stableKey: stableKey,
+                        name: routeName,
+                        kindTitle: item.title,
+                        baseURL: entry.baseURL ?? "Managed by CLIProxyAPIPlus",
+                        modelCount: cachedModels.count,
+                        isEnabled: true,
+                        isEditable: false,
+                        canRename: item.configKey == "openai-compatibility",
+                        configKey: item.configKey,
+                        entryIndex: index,
+                        selectedModels: Set(effectiveConfiguredModels.map(\.id)),
+                        models: cachedModels
+                    )
+                )
+            }
+        }
+
+        return routes
     }
 
     private static func loadOrBootstrapManifest(paths: RuntimePaths, runtimeManager: RuntimeManager) -> RuntimeManifest {
@@ -418,6 +679,28 @@ final class ProxyService: ProxyServicing {
         }
     }
 
+    nonisolated private static func mapProviderModels(_ models: [ManagementAuthFileModel], configuredModels: [ManagementAuthFileModel]) -> [ProviderModel] {
+        let selected = Set(configuredModels.map(\.id))
+        var merged: [String: ManagementAuthFileModel] = [:]
+        for model in models {
+            merged[model.id] = model
+        }
+        for model in configuredModels {
+            merged[model.id] = merged[model.id] ?? model
+        }
+        let discoveredIDs = Set(models.map(\.id))
+        return merged.values.sorted { $0.id < $1.id }.map {
+            ProviderModel(
+                id: $0.id,
+                displayName: $0.displayName,
+                type: $0.type,
+                ownedBy: $0.ownedBy,
+                isEnabled: selected.contains($0.id),
+                isDeprecated: !discoveredIDs.isEmpty && !discoveredIDs.contains($0.id)
+            )
+        }
+    }
+
     nonisolated private static func modelDefinitionCandidates(for file: ManagementAuthFile) -> [String] {
         var seen = Set<String>()
         var candidates: [String] = []
@@ -459,12 +742,18 @@ final class ProxyService: ProxyServicing {
             providers.append(
                 ProviderRoute(
                     id: UUID(),
+                    stableKey: providerStableKey(configKey: key, entryIndex: 0),
                     name: name,
+                    kindTitle: name,
                     baseURL: (items.first?["base-url"] as? String) ?? "Managed by CLIProxyAPIPlus",
                     modelCount: items.count,
                     isEnabled: true,
                     isEditable: false,
-                    configKey: key
+                    canRename: key == "openai-compatibility",
+                    configKey: key,
+                    entryIndex: 0,
+                    selectedModels: [],
+                    models: []
                 )
             )
         }
@@ -491,7 +780,9 @@ final class ProxyService: ProxyServicing {
         var providers: [ProviderRoute] = []
 
         for (key, name) in keys {
-            guard let keyIndex = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == "\(key):" }) else {
+            guard let keyIndex = lines.firstIndex(where: {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("\(key):")
+            }) else {
                 continue
             }
 
@@ -522,12 +813,18 @@ final class ProxyService: ProxyServicing {
             providers.append(
                 ProviderRoute(
                     id: UUID(),
+                    stableKey: providerStableKey(configKey: key, entryIndex: providers.count),
                     name: name,
+                    kindTitle: name,
                     baseURL: firstBaseURL ?? "Managed by CLIProxyAPIPlus",
                     modelCount: itemCount,
                     isEnabled: true,
                     isEditable: false,
-                    configKey: key
+                    canRename: key == "openai-compatibility",
+                    configKey: key,
+                    entryIndex: 0,
+                    selectedModels: [],
+                    models: []
                 )
             )
         }
@@ -586,7 +883,12 @@ final class ProxyService: ProxyServicing {
         var lines = yaml.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         let keyLine = "\(key):"
 
-        if let keyIndex = lines.firstIndex(where: { $0 == keyLine }) {
+        if let keyIndex = lines.firstIndex(where: {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix(keyLine)
+        }) {
+            if lines[keyIndex].trimmingCharacters(in: .whitespacesAndNewlines) != keyLine {
+                lines[keyIndex] = keyLine
+            }
             var insertIndex = keyIndex + 1
             while insertIndex < lines.count {
                 let line = lines[insertIndex]
@@ -699,6 +1001,98 @@ final class ProxyService: ProxyServicing {
             return "Qwen"
         default:
             return provider.replacingOccurrences(of: "-", with: " ").capitalized
+        }
+    }
+
+    nonisolated private static func providerRouteName(configKey: String, kindTitle: String, entryName: String?, baseURL: String?, index: Int) -> String {
+        if let entryName = trimmed(entryName) {
+            return entryName
+        }
+        if configKey == "openai-compatibility", let host = hostDisplay(from: baseURL) {
+            return host
+        }
+        if let host = hostDisplay(from: baseURL) {
+            return "\(kindTitle) \(index + 1) · \(host)"
+        }
+        return "\(kindTitle) \(index + 1)"
+    }
+
+    nonisolated private static func hostDisplay(from rawURL: String?) -> String? {
+        guard let rawURL = trimmed(rawURL), let url = URL(string: rawURL) else {
+            return nil
+        }
+        return url.host ?? rawURL
+    }
+
+    nonisolated private static func providerStableKey(configKey: String, entryIndex: Int) -> String {
+        "\(configKey)#\(entryIndex)"
+    }
+
+    private static func resolveProviderModels(entry: ManagementProviderEntry, configKey: String, apiClient: ManagementAPIClient) async -> [ManagementAuthFileModel] {
+        if let onlineModels = try? await apiClient.fetchOfficialProviderModels(configKey: configKey, entry: entry), !onlineModels.isEmpty {
+            return onlineModels
+        }
+        return entry.configuredModels
+    }
+
+    nonisolated private static func providerModelsPayload(from selectedModels: Set<String>) -> [[String: Any]] {
+        selectedModels.sorted().map { modelID in
+            [
+                "name": modelID,
+                "alias": modelID
+            ]
+        }
+    }
+
+    nonisolated private static func providerConfiguredModels(from selectedModels: Set<String>) -> [ManagementAuthFileModel] {
+        selectedModels.sorted().map { modelID in
+            ManagementAuthFileModel(id: modelID, displayName: nil, type: "model", ownedBy: nil)
+        }
+    }
+
+    nonisolated private static func providerConfiguredModels(from config: [String: Any], configKey: String, entryIndex: Int) -> [ManagementAuthFileModel] {
+        guard let entries = config[configKey] as? [[String: Any]], entryIndex >= 0, entryIndex < entries.count else {
+            return []
+        }
+        let models = entries[entryIndex]["models"] as? [[String: Any]] ?? []
+        let configuredModels = models.compactMap { model -> ManagementAuthFileModel? in
+            let alias = (model["alias"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = (model["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let id = alias?.isEmpty == false ? alias : name, !id.isEmpty else {
+                return nil
+            }
+            return ManagementAuthFileModel(id: id, displayName: name, type: model["type"] as? String, ownedBy: nil)
+        }
+        return configuredModels
+    }
+
+    private func cachedProviderModels(for stableKey: String, configuredModels: [ManagementAuthFileModel]) -> [ProviderModel] {
+        guard let cached = providerModelCache[stableKey], !cached.isEmpty else {
+            return Self.mapProviderModels([], configuredModels: configuredModels)
+        }
+
+        let selected = Set(configuredModels.map(\.id))
+        var merged = Dictionary(uniqueKeysWithValues: cached.map { ($0.id, $0) })
+        for configured in configuredModels {
+            if var existing = merged[configured.id] {
+                existing.isEnabled = true
+                merged[configured.id] = existing
+            } else {
+                merged[configured.id] = ProviderModel(
+                    id: configured.id,
+                    displayName: configured.displayName,
+                    type: configured.type,
+                    ownedBy: configured.ownedBy,
+                    isEnabled: true,
+                    isDeprecated: true
+                )
+            }
+        }
+
+        return merged.values.sorted { $0.id < $1.id }.map { model in
+            var updated = model
+            updated.isEnabled = selected.contains(model.id)
+            return updated
         }
     }
 

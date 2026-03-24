@@ -63,22 +63,36 @@ private struct TrayMenuContent: View {
 
         Divider()
 
-        Button(viewModel.snapshot.runtimeState == .running ? "Stop Service" : "Start Service") {
+        Button(trayActionTitle) {
             Task {
-                if viewModel.snapshot.runtimeState == .running {
-                    await viewModel.stopProxy()
-                } else {
-                    await viewModel.startProxy()
-                }
+                await viewModel.toggleProxy()
             }
         }
-        .disabled(viewModel.isLoading)
+        .disabled(viewModel.isLoading || isRuntimeTransitioning)
 
         Divider()
 
         Button("Quit SurProxy") {
             viewModel.shutdown()
             NSApp.terminate(nil)
+        }
+    }
+
+    private var trayActionTitle: String {
+        switch viewModel.snapshot.runtimeState {
+        case .running, .starting:
+            return "Stop Service"
+        case .stopped, .stopping, .degraded:
+            return "Start Service"
+        }
+    }
+
+    private var isRuntimeTransitioning: Bool {
+        switch viewModel.snapshot.runtimeState {
+        case .starting, .stopping:
+            return true
+        case .running, .stopped, .degraded:
+            return false
         }
     }
 }
