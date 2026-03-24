@@ -93,6 +93,10 @@ struct ContentView: View {
                 LabeledContent("Port", value: "\(viewModel.snapshot.activePort)")
                 LabeledContent("Runtime Source", value: viewModel.snapshot.binary.source.title)
                 LabeledContent("Runtime Version", value: viewModel.snapshot.binary.currentVersion)
+                if let runtimeNotice = viewModel.snapshot.runtimeNotice {
+                    Text(runtimeNotice)
+                        .foregroundStyle(.orange)
+                }
                 if let lastErrorMessage = viewModel.lastErrorMessage {
                     Text(lastErrorMessage)
                         .foregroundStyle(.red)
@@ -219,7 +223,7 @@ struct ContentView: View {
                     .font(.title3.weight(.semibold))
 
                 if viewModel.snapshot.providers.isEmpty {
-                    Text("No provider routing data has been loaded yet. Once CLIProxyAPIPlus returns config through the management API, SurProxy will show the discovered provider groups here.")
+                    Text("No provider configuration exists yet. Add a provider below and SurProxy will write it into CLIProxyAPIPlus config.yaml, then show the discovered routing groups here.")
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(Array(viewModel.snapshot.providers.enumerated()), id: \.element.id) { _, provider in
@@ -253,6 +257,73 @@ struct ContentView: View {
                         if provider.id != viewModel.snapshot.providers.last?.id {
                             Divider()
                         }
+                    }
+                }
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Add Provider")
+                        .font(.headline)
+
+                    Picker("Type", selection: Binding(
+                        get: { viewModel.providerDraft.kind },
+                        set: { viewModel.setProviderKind($0) }
+                    )) {
+                        ForEach(ProviderConfigurationKind.allCases) { kind in
+                            Text(kind.title).tag(kind)
+                        }
+                    }
+
+                    if viewModel.providerDraft.kind.supportsProviderName {
+                        TextField("Provider Name", text: $viewModel.providerDraft.providerName)
+                            .textFieldStyle(.roundedBorder)
+                        if let message = viewModel.providerDraftValidation.providerName {
+                            Text(message)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
+                    }
+
+                    TextField("Base URL", text: $viewModel.providerDraft.baseURL)
+                        .textFieldStyle(.roundedBorder)
+                    if let message = viewModel.providerDraftValidation.baseURL {
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                    SecureField("API Key", text: $viewModel.providerDraft.apiKey)
+                        .textFieldStyle(.roundedBorder)
+                    if let message = viewModel.providerDraftValidation.apiKey {
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                    TextField("Upstream Model Name", text: $viewModel.providerDraft.modelName)
+                        .textFieldStyle(.roundedBorder)
+                    if let message = viewModel.providerDraftValidation.modelName {
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                    TextField("Client Model Alias", text: $viewModel.providerDraft.modelAlias)
+                        .textFieldStyle(.roundedBorder)
+                    if let message = viewModel.providerDraftValidation.modelAlias {
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+
+                    HStack {
+                        Button("Add Provider") {
+                            Task { await viewModel.addProvider() }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(viewModel.isLoading)
+
+                        Text("This writes through CLIProxyAPIPlus `/v0/management/config.yaml` and then refreshes config state.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
             }

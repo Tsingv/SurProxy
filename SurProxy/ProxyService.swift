@@ -12,10 +12,12 @@ protocol ProxyServicing {
     func setRuntimeState(_ state: ProxyRuntimeState) async throws -> ProxyStatusSnapshot
     func setOAuthProfile(id: UUID, isActive: Bool) async throws -> ProxyStatusSnapshot
     func setProvider(id: UUID, isEnabled: Bool) async throws -> ProxyStatusSnapshot
+    func addProvider(_ draft: ProviderDraft) async throws -> ProxyStatusSnapshot
     func reloadConfiguration() async throws -> ProxyStatusSnapshot
     func reinstallBundledRuntime() async throws -> ProxyStatusSnapshot
     func startOAuthLogin(provider: OAuthLoginProvider) async throws -> OAuthLoginSession
     func pollOAuthLogin(state: String) async throws -> ProxyStatusSnapshot
+    func shutdown()
 }
 
 final class ProxyService: ProxyServicing {
@@ -69,6 +71,9 @@ final class ProxyService: ProxyServicing {
 
         switch state {
         case .running:
+            if !runtimeManager.isRunning, await apiClient.healthCheck(baseURL: managementBaseURL(), key: manifest.managementKey) {
+                return try await refreshSnapshot()
+            }
             try runtimeManager.start(paths: paths)
             try await waitForManagementReady()
         case .stopped:
@@ -104,11 +109,23 @@ final class ProxyService: ProxyServicing {
         )
     }
 
-    func reloadConfiguration() async throws -> ProxyStatusSnapshot {
+    func addProvider(_ draft: ProviderDraft) async throws -> ProxyStatusSnapshot {
         try prepareRuntime()
-        if runtimeManager.isRunning {
+        if !runtimeManager.isRunning {
+            try runtimeManager.start(paths: paths)
             try await waitForManagementReady()
         }
+
+        let yaml = try await apiClient.getConfigYAML(baseURL: managementBaseURL(), key: manifest.managementKey)
+        let updatedYAML = try Self.appendingProvider(draft, to: yaml)
+        try await apiClient.putConfigYAML(baseURL: managementBaseURL(), key: manifest.managementKey, yaml: updatedYAML)
+        try await Task.sleep(for: .milliseconds(400))
+        return try await refreshSnapshot()
+    }
+
+    func reloadConfiguration() async throws -> ProxyStatusSnapshot {
+        try prepareRuntime()
+        try await ensureManagementReady()
         return try await refreshSnapshot()
     }
 
@@ -178,10 +195,25 @@ final class ProxyService: ProxyServicing {
         )
     }
 
+    func shutdown() {
+        runtimeManager.stop()
+    }
+
     private func prepareRuntime() throws {
         manifest = try runtimeManager.prepareRuntime(paths: paths, manifest: manifest)
         try runtimeManager.ensureConfig(paths: paths, manifest: manifest)
         try runtimeManager.writeManifest(manifest, to: paths.manifestFile)
+    }
+
+    private func ensureManagementReady() async throws {
+        let baseURL = managementBaseURL()
+        if await apiClient.healthCheck(baseURL: baseURL, key: manifest.managementKey) {
+            return
+        }
+        if !runtimeManager.isRunning {
+            try runtimeManager.start(paths: paths)
+        }
+        try await waitForManagementReady()
     }
 
     private func waitForManagementReady() async throws {
@@ -191,10 +223,11 @@ final class ProxyService: ProxyServicing {
         while Date() < deadline {
             if !runtimeManager.isRunning {
                 let details = runtimeManager.recentLog.trimmingCharacters(in: .whitespacesAndNewlines)
+                let exitDetails = runtimeManager.recentExitStatus.map { " Exit status: \($0)." } ?? ""
                 if details.isEmpty {
-                    throw RuntimeManagerError.runtimeExited("CLIProxyAPIPlus exited before the management API became ready.")
+                    throw RuntimeManagerError.runtimeExited("CLIProxyAPIPlus exited before the management API became ready.\(exitDetails)")
                 }
-                throw RuntimeManagerError.runtimeExited("CLIProxyAPIPlus exited before the management API became ready.\n\(details)")
+                throw RuntimeManagerError.runtimeExited("CLIProxyAPIPlus exited before the management API became ready.\(exitDetails)\n\(details)")
             }
 
             if await apiClient.healthCheck(baseURL: baseURL, key: manifest.managementKey) {
@@ -208,21 +241,28 @@ final class ProxyService: ProxyServicing {
             throw RuntimeManagerError.runtimeExited("CLIProxyAPIPlus did not become ready in time. Recent runtime log:\n\(runtimeManager.recentLog)")
         }
 
-        throw RuntimeManagerError.runtimeExited("CLIProxyAPIPlus is not running. Recent runtime log:\n\(runtimeManager.recentLog)")
+        let exitDetails = runtimeManager.recentExitStatus.map { " Exit status: \($0)." } ?? ""
+        throw RuntimeManagerError.runtimeExited("CLIProxyAPIPlus is not running.\(exitDetails) Recent runtime log:\n\(runtimeManager.recentLog)")
     }
 
     private func refreshSnapshot() async throws -> ProxyStatusSnapshot {
         var next = ProxyService.bootstrapSnapshot(paths: paths, manifest: manifest)
+        next.binary.latestVersion = snapshot.binary.latestVersion
         let baseURL = managementBaseURL()
 
         let managementReachable = await apiClient.healthCheck(baseURL: baseURL, key: manifest.managementKey)
+        let existingRuntimeDetected = managementReachable && !runtimeManager.isRunning
         if runtimeManager.isRunning && managementReachable {
             next.runtimeState = .running
         } else if runtimeManager.isRunning {
             next.runtimeState = .degraded
+        } else if existingRuntimeDetected {
+            next.runtimeState = .running
         } else {
             next.runtimeState = .stopped
         }
+        next.existingRuntimeDetected = existingRuntimeDetected
+        next.runtimeNotice = existingRuntimeDetected ? "Detected an already running CLIProxyAPIPlus instance on this port. SurProxy is connected to it instead of launching a second runtime." : nil
 
         if managementReachable {
             next.binary.latestVersion = try? await apiClient.latestVersion(baseURL: baseURL, key: manifest.managementKey)
@@ -231,8 +271,14 @@ final class ProxyService: ProxyServicing {
             } else {
                 next.oauthProfiles = Self.loadAuthFilesFromDisk(at: paths.authDirectory, fileManager: fileManager)
             }
+            let configYAML = try? await apiClient.getConfigYAML(baseURL: baseURL, key: manifest.managementKey)
             if let config = try? await apiClient.getConfig(baseURL: baseURL, key: manifest.managementKey) {
                 next.providers = Self.mapProviders(from: config)
+                if next.providers.isEmpty, let configYAML {
+                    next.providers = Self.mapProviders(fromYAML: configYAML)
+                }
+            } else if let configYAML {
+                next.providers = Self.mapProviders(fromYAML: configYAML)
             }
         } else {
             next.managementAPIDisabled = false
@@ -267,6 +313,8 @@ final class ProxyService: ProxyServicing {
         snapshot.binary.activeBinaryPath = paths.activeBinary.path
         snapshot.managementBaseURL = "http://127.0.0.1:\(manifest.port)/v0/management"
         snapshot.managementAPIDisabled = false
+        snapshot.existingRuntimeDetected = false
+        snapshot.runtimeNotice = nil
         return snapshot
     }
 
@@ -344,7 +392,8 @@ final class ProxyService: ProxyServicing {
                     baseURL: (items.first?["base-url"] as? String) ?? "Managed by CLIProxyAPIPlus",
                     modelCount: items.count,
                     isEnabled: true,
-                    isEditable: false
+                    isEditable: false,
+                    configKey: key
                 )
             )
         }
@@ -356,6 +405,143 @@ final class ProxyService: ProxyServicing {
         appendProvider(name: "Vertex API Keys", key: "vertex-api-key")
 
         return providers.isEmpty ? ProxyStatusSnapshot.bootstrap().providers : providers
+    }
+
+    private static func mapProviders(fromYAML yaml: String) -> [ProviderRoute] {
+        let keys: [(String, String)] = [
+            ("gemini-api-key", "Gemini API Keys"),
+            ("claude-api-key", "Claude API Keys"),
+            ("codex-api-key", "Codex API Keys"),
+            ("openai-compatibility", "OpenAI Compatibility"),
+            ("vertex-api-key", "Vertex API Keys")
+        ]
+
+        let lines = yaml.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var providers: [ProviderRoute] = []
+
+        for (key, name) in keys {
+            guard let keyIndex = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == "\(key):" }) else {
+                continue
+            }
+
+            var itemCount = 0
+            var firstBaseURL: String?
+            var index = keyIndex + 1
+
+            while index < lines.count {
+                let line = lines[index]
+                if !line.isEmpty && !line.hasPrefix(" ") && !line.hasPrefix("\t") {
+                    break
+                }
+
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("- ") {
+                    itemCount += 1
+                }
+                if firstBaseURL == nil, trimmed.hasPrefix("base-url:") {
+                    firstBaseURL = trimmed
+                        .replacingOccurrences(of: "base-url:", with: "")
+                        .trimmingCharacters(in: .whitespaces)
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "'\""))
+                }
+                index += 1
+            }
+
+            guard itemCount > 0 else { continue }
+            providers.append(
+                ProviderRoute(
+                    id: UUID(),
+                    name: name,
+                    baseURL: firstBaseURL ?? "Managed by CLIProxyAPIPlus",
+                    modelCount: itemCount,
+                    isEnabled: true,
+                    isEditable: false,
+                    configKey: key
+                )
+            )
+        }
+
+        return providers
+    }
+
+    nonisolated private static func appendingProvider(_ draft: ProviderDraft, to yaml: String) throws -> String {
+        let trimmedAPIKey = draft.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedBaseURL = draft.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedModelName = draft.modelName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedModelAlias = draft.modelAlias.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedProviderName = draft.providerName.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !trimmedAPIKey.isEmpty else {
+            throw NSError(domain: "SurProxy.Provider", code: 2, userInfo: [NSLocalizedDescriptionKey: "API key is required."])
+        }
+        guard !trimmedBaseURL.isEmpty else {
+            throw NSError(domain: "SurProxy.Provider", code: 3, userInfo: [NSLocalizedDescriptionKey: "Base URL is required."])
+        }
+        guard !trimmedModelName.isEmpty, !trimmedModelAlias.isEmpty else {
+            throw NSError(domain: "SurProxy.Provider", code: 4, userInfo: [NSLocalizedDescriptionKey: "Model name and alias are required."])
+        }
+        if draft.kind.supportsProviderName && trimmedProviderName.isEmpty {
+            throw NSError(domain: "SurProxy.Provider", code: 5, userInfo: [NSLocalizedDescriptionKey: "Provider name is required for OpenAI compatibility entries."])
+        }
+
+        let block = providerBlock(for: draft.kind, providerName: trimmedProviderName, baseURL: trimmedBaseURL, apiKey: trimmedAPIKey, modelName: trimmedModelName, modelAlias: trimmedModelAlias)
+        return appendYAMLBlock(block, forTopLevelKey: draft.kind.configKey, to: yaml)
+    }
+
+    nonisolated private static func providerBlock(for kind: ProviderConfigurationKind, providerName: String, baseURL: String, apiKey: String, modelName: String, modelAlias: String) -> [String] {
+        switch kind {
+        case .openAICompatibility:
+            return [
+                "  - name: '\(escapeYAML(providerName))'",
+                "    base-url: '\(escapeYAML(baseURL))'",
+                "    api-key-entries:",
+                "      - api-key: '\(escapeYAML(apiKey))'",
+                "    models:",
+                "      - name: '\(escapeYAML(modelName))'",
+                "        alias: '\(escapeYAML(modelAlias))'"
+            ]
+        case .geminiAPIKey, .claudeAPIKey, .codexAPIKey, .vertexAPIKey:
+            return [
+                "  - api-key: '\(escapeYAML(apiKey))'",
+                "    base-url: '\(escapeYAML(baseURL))'",
+                "    models:",
+                "      - name: '\(escapeYAML(modelName))'",
+                "        alias: '\(escapeYAML(modelAlias))'"
+            ]
+        }
+    }
+
+    nonisolated private static func appendYAMLBlock(_ block: [String], forTopLevelKey key: String, to yaml: String) -> String {
+        var lines = yaml.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let keyLine = "\(key):"
+
+        if let keyIndex = lines.firstIndex(where: { $0 == keyLine }) {
+            var insertIndex = keyIndex + 1
+            while insertIndex < lines.count {
+                let line = lines[insertIndex]
+                if line.isEmpty {
+                    insertIndex += 1
+                    continue
+                }
+                if !line.hasPrefix(" ") && !line.hasPrefix("\t") {
+                    break
+                }
+                insertIndex += 1
+            }
+            lines.insert(contentsOf: block, at: insertIndex)
+        } else {
+            if !lines.isEmpty, !lines.last!.isEmpty {
+                lines.append("")
+            }
+            lines.append(keyLine)
+            lines.append(contentsOf: block)
+        }
+
+        return lines.joined(separator: "\n").trimmingCharacters(in: .newlines) + "\n"
+    }
+
+    nonisolated private static func escapeYAML(_ value: String) -> String {
+        value.replacingOccurrences(of: "'", with: "''")
     }
 
     nonisolated private static func loadAuthFilesFromDisk(at directory: URL, fileManager: FileManager) -> [OAuthProfile] {
