@@ -205,6 +205,7 @@ Current UI sections:
 - OAuth login buttons
 - OAuth file list
 - provider routing summary
+- left sidebar category navigation: `Status`, `OAuth`, `Provider`
 
 Current actions exposed:
 
@@ -225,6 +226,9 @@ Current display behavior:
 - each OAuth card can show copyable model IDs from upstream
 - OAuth cards are rendered in an adaptive multi-column grid based on available window width
 - model lists use a collapsed disclosure style by default to reduce vertical space
+- the main window is now a single `Window`, not a `WindowGroup`
+- the app stays alive in the menu bar after the main window is closed
+- the tray menu can reopen the main window, toggle service start/stop, and quit the app
 - provider routing is currently read-only summary UI; it is not a true config editor yet
 - provider summary depends on the real upstream config, so if provider entries disappear after reload it usually indicates config was overwritten rather than a UI-only problem
 
@@ -253,6 +257,7 @@ If sandboxing is reconsidered later, the product architecture will need to chang
 - Provider routing UI is still a lightweight summary mapped from management config, not a full native config editor.
 - Provider routing toggles are intentionally not persisted yet; pretending they work would be incorrect.
 - `Reload Config` currently means: rewrite SurProxy-managed config if needed and refresh management snapshot. It is not a dedicated upstream reload API integration.
+- menu bar interaction is currently implemented with SwiftUI `MenuBarExtra`; if layout-recursion behavior resurfaces, the next escalation path is a lower-level `NSStatusItem` + `NSMenu` implementation
 
 ## Build and Packaging Workflow
 
@@ -280,6 +285,7 @@ The following have been verified during development:
 - `codex-auth-url?is_webui=true` returns a valid upstream OAuth URL and state
 - auth files exist in `~/.cli-proxy-api/` and upstream runtime logs confirm they are loaded as clients
 - SurProxy now has a local disk fallback for auth file visibility even if management auth-file parsing fails
+- the main window can be reopened from the tray without creating duplicate main-window instances after switching to a single `Window` scene
 
 ## Recommended Next Work
 
