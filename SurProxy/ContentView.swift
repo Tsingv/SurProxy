@@ -40,32 +40,58 @@ private enum SidebarSection: String, CaseIterable, Identifiable, Hashable {
 struct ContentView: View {
     @ObservedObject var viewModel: AppViewModel
     @State private var expandedModelGroups: Set<UUID> = []
+    @State private var expandedProviderModelGroups: Set<UUID> = []
     @State private var selectedSection: SidebarSection? = .status
 
     var body: some View {
-        NavigationSplitView {
-            List(SidebarSection.allCases, selection: $selectedSection) { section in
-                Label(section.title, systemImage: section.icon)
-                    .tag(section)
-            }
-            .navigationTitle("SurProxy")
-        } detail: {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    switch selectedSection ?? .status {
-                    case .status:
-                        runtimeCard
-                        runtimeBinaryCard
-                    case .oauth:
-                        oauthLoginCard
-                        oauthCard
-                    case .providers:
-                        providerCard
-                    }
+        ZStack {
+            NavigationSplitView {
+                List(SidebarSection.allCases, selection: $selectedSection) { section in
+                    Label(section.title, systemImage: section.icon)
+                        .tag(section)
                 }
-                .padding(24)
+                .navigationTitle("SurProxy")
+            } detail: {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        switch selectedSection ?? .status {
+                        case .status:
+                            runtimeCard
+                            runtimeBinaryCard
+                        case .oauth:
+                            oauthLoginCard
+                            oauthCard
+                        case .providers:
+                            providerCard
+                        }
+                    }
+                    .padding(24)
+                }
+                .background(Color(nsColor: .windowBackgroundColor))
             }
-            .background(Color(nsColor: .windowBackgroundColor))
+            if viewModel.isLoading {
+                Color.black.opacity(0.08)
+                    .ignoresSafeArea()
+                ProgressView()
+                    .controlSize(.large)
+                    .padding(20)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+            }
+        }
+        .alert(item: Binding(
+            get: { viewModel.pendingDeletionConfirmation },
+            set: { viewModel.pendingDeletionConfirmation = $0 }
+        )) { item in
+            Alert(
+                title: Text(item.title),
+                message: Text(item.message),
+                primaryButton: .destructive(Text("Delete")) {
+                    Task { await viewModel.deleteConfirmedItem(item) }
+                },
+                secondaryButton: .cancel {
+                    viewModel.pendingDeletionConfirmation = nil
+                }
+            )
         }
     }
 
@@ -91,16 +117,11 @@ struct ContentView: View {
                 }
 
                 HStack(spacing: 12) {
-                    Button("Start") {
-                        Task { await viewModel.startProxy() }
+                    Button(runtimeActionTitle) {
+                        Task { await viewModel.toggleProxy() }
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(viewModel.snapshot.runtimeState == .running || viewModel.isLoading)
-
-                    Button("Stop") {
-                        Task { await viewModel.stopProxy() }
-                    }
-                    .disabled(viewModel.snapshot.runtimeState == .stopped || viewModel.isLoading)
+                    .disabled(viewModel.isLoading || isRuntimeTransitioning)
 
                     Button("Reload Config") {
                         Task { await viewModel.reloadConfiguration() }
@@ -193,6 +214,12 @@ struct ContentView: View {
                 Text("OAuth Files")
                     .font(.title3.weight(.semibold))
 
+                if let lastErrorMessage = viewModel.lastErrorMessage {
+                    Text(lastErrorMessage)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+
                 if viewModel.snapshot.oauthProfiles.isEmpty {
                     Text("No OAuth files detected yet. Start a provider login above and CLIProxyAPIPlus will create the auth file in its managed auth directory.")
                         .foregroundStyle(.secondary)
@@ -244,6 +271,14 @@ struct ContentView: View {
                 )
                 .labelsHidden()
                 .toggleStyle(.switch)
+                .disabled(viewModel.isLoading)
+
+                Button(role: .destructive) {
+                    viewModel.confirmDeleteOAuth(id: profile.id)
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
                 .disabled(viewModel.isLoading)
             }
 
@@ -308,40 +343,18 @@ struct ContentView: View {
                 Text("Provider Routing")
                     .font(.title3.weight(.semibold))
 
+                if let lastErrorMessage = viewModel.lastErrorMessage {
+                    Text(lastErrorMessage)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
                 if viewModel.snapshot.providers.isEmpty {
                     Text("No provider configuration exists yet. Add a provider below and SurProxy will write it into CLIProxyAPIPlus config.yaml, then show the discovered routing groups here.")
                         .foregroundStyle(.secondary)
                 } else {
-                    ForEach(Array(viewModel.snapshot.providers.enumerated()), id: \.element.id) { _, provider in
-                        HStack(spacing: 12) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(provider.name)
-                                    .font(.headline)
-                                Text(provider.baseURL)
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-                                Text("\(provider.modelCount) models discovered")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-
-                            Spacer()
-
-                            VStack(alignment: .trailing, spacing: 6) {
-                                Text(provider.isEnabled ? "Observed" : "Disabled")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(provider.isEnabled ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.red))
-
-                                if !provider.isEditable {
-                                    Text("Read-only")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-
-                        if provider.id != viewModel.snapshot.providers.last?.id {
-                            Divider()
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 320, maximum: 520), spacing: 16)], alignment: .leading, spacing: 16) {
+                        ForEach(viewModel.snapshot.providers) { provider in
+                            providerRouteCard(provider)
                         }
                     }
                 }
@@ -349,6 +362,18 @@ struct ContentView: View {
                 Divider()
 
                 VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text("Pending changes are saved together into CLIProxyAPIPlus config.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Save Provider Changes") {
+                            Task { await viewModel.saveProviderChanges() }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(viewModel.isLoading || !viewModel.hasPendingProviderChanges)
+                    }
+
                     Text("Add Provider")
                         .font(.headline)
 
@@ -419,8 +444,167 @@ struct ContentView: View {
         viewModel.snapshot.oauthProfiles.filter(\.isValid).count
     }
 
+    private func providerRouteCard(_ provider: ProviderRoute) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    if provider.canRename {
+                        HStack(spacing: 8) {
+                            TextField(
+                                "Provider Name",
+                                text: Binding(
+                                    get: { viewModel.providerNameDrafts[provider.stableKey] ?? provider.name },
+                                    set: { viewModel.setProviderNameDraft(stableKey: provider.stableKey, value: $0) }
+                                )
+                            )
+                            .textFieldStyle(.roundedBorder)
+                            .font(.headline)
+
+                            Button("Save Name") {
+                                Task { await viewModel.saveProviderName(stableKey: provider.stableKey) }
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .disabled(
+                                viewModel.isLoading ||
+                                (viewModel.providerNameDrafts[provider.stableKey] ?? provider.name)
+                                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                                    .isEmpty ||
+                                (viewModel.providerNameDrafts[provider.stableKey] ?? provider.name)
+                                    .trimmingCharacters(in: .whitespacesAndNewlines) == provider.name
+                            )
+                        }
+                    } else {
+                        Text(provider.name)
+                            .font(.headline)
+                    }
+                    Text(provider.kindTitle)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(provider.baseURL)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Text("\(provider.modelCount) models discovered")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 8)
+
+                VStack(alignment: .trailing, spacing: 6) {
+                    Text(provider.isEnabled ? "Observed" : "Disabled")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(provider.isEnabled ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.red))
+
+                    if !provider.isEditable {
+                        Text("Read-only")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Button(role: .destructive) {
+                        viewModel.confirmDeleteProvider(stableKey: provider.stableKey)
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(viewModel.isLoading)
+                }
+            }
+
+            DisclosureGroup(
+                isExpanded: Binding(
+                    get: { expandedProviderModelGroups.contains(provider.id) },
+                    set: { isExpanded in
+                        if isExpanded {
+                            expandedProviderModelGroups.insert(provider.id)
+                            viewModel.loadProviderModels(stableKey: provider.stableKey)
+                        } else {
+                            expandedProviderModelGroups.remove(provider.id)
+                        }
+                    }
+                )
+            ) {
+                VStack(alignment: .leading, spacing: 6) {
+                    if viewModel.providerModelLoadingKeys.contains(provider.stableKey) {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else if provider.models.isEmpty {
+                        Text("No models loaded yet. Expand to refresh the live model list for this provider.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(provider.models) { model in
+                        HStack(spacing: 8) {
+                            Toggle(
+                                isOn: Binding(
+                                    get: { provider.selectedModels.contains(model.id) },
+                                    set: { newValue in
+                                        Task { await viewModel.setProviderModel(providerID: provider.id, modelID: model.id, isEnabled: newValue) }
+                                    }
+                                )
+                            ) {
+                                EmptyView()
+                            }
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                            .disabled(viewModel.isLoading)
+
+                            VStack(alignment: .leading, spacing: 1) {
+                                HStack(spacing: 6) {
+                                    Text(model.id)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .lineLimit(1)
+                                        .textSelection(.enabled)
+                                    if model.isDeprecated {
+                                        Text("Deprecated")
+                                            .font(.caption2.weight(.semibold))
+                                            .foregroundStyle(.orange)
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .background(Color.orange.opacity(0.14))
+                                            .clipShape(Capsule())
+                                    }
+                                }
+                                if !model.subtitle.isEmpty {
+                                    Text(model.subtitle)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                            }
+
+                            Spacer(minLength: 8)
+
+                            Button("Copy") {
+                                viewModel.copyModelID(model.id)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.mini)
+                            .disabled(viewModel.isLoading)
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+                .padding(.top, 4)
+            } label: {
+                Text("Available Models (\(provider.models.count))")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.secondary.opacity(0.07))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
     private var runtimeIcon: String {
         switch viewModel.snapshot.runtimeState {
+        case .starting:
+            return "arrow.triangle.2.circlepath.circle.fill"
+        case .stopping:
+            return "arrow.triangle.2.circlepath.circle"
         case .running:
             return "play.circle.fill"
         case .stopped:
@@ -432,6 +616,10 @@ struct ContentView: View {
 
     private var runtimeTint: Color {
         switch viewModel.snapshot.runtimeState {
+        case .starting:
+            return .blue
+        case .stopping:
+            return .orange
         case .running:
             return .green
         case .stopped:
@@ -443,5 +631,23 @@ struct ContentView: View {
 
     private func buttonTitle(for provider: OAuthLoginProvider) -> String {
         "Login \(provider.title)"
+    }
+
+    private var runtimeActionTitle: String {
+        switch viewModel.snapshot.runtimeState {
+        case .running, .starting:
+            return "Stop"
+        case .stopped, .stopping, .degraded:
+            return "Start"
+        }
+    }
+
+    private var isRuntimeTransitioning: Bool {
+        switch viewModel.snapshot.runtimeState {
+        case .starting, .stopping:
+            return true
+        case .running, .stopped, .degraded:
+            return false
+        }
     }
 }

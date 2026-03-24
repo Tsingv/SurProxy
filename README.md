@@ -70,15 +70,27 @@ Important behavior:
 - For models, SurProxy first uses `GET /v0/management/auth-files/models?name=...` and then does a dynamic channel probe against `GET /v0/management/model-definitions/:channel` using auth-provided identifiers rather than a hardcoded provider-to-channel table.
 - OAuth cards are shown in an adaptive multi-column grid and model lists are collapsed by default to reduce space usage.
 - The app now runs as a menu bar host: closing the main window keeps SurProxy alive in the system status bar, and the tray menu can reopen the single main window, start or stop the service, or quit the app.
+- Provider cards are also shown in an adaptive grid and load live model lists lazily when each disclosure section is expanded.
+- Provider model enablement is sourced from `CLIProxyAPIPlus` management APIs, not by directly reading the local config file from the UI layer.
+- Deprecated provider models that still exist in configured `models` but no longer appear in the remote provider catalog remain visible in the list and are marked with an orange `Deprecated` badge.
+- Saving provider model changes now writes back upstream configuration and then immediately rereads provider state from management APIs so the UI reflects the real saved state.
+- Provider model save strategy currently uses per-entry `PATCH` for `openai-compatibility`, `claude-api-key`, `codex-api-key`, and `vertex-api-key`; `gemini-api-key` still uses grouped `PUT` because upstream patch support for `models` is not available there.
+- The UI shows a global loading overlay during management API mutations so users do not continue interacting with stale state while writes are in flight.
 
 ## Upstream APIs In Active Use
 
 - `/v0/management/config`
+- `/v0/management/config.yaml`
 - `/v0/management/latest-version`
 - `/v0/management/auth-files`
 - `/v0/management/auth-files/models`
 - `/v0/management/auth-files/status`
 - `/v0/management/model-definitions/:channel`
+- `/v0/management/gemini-api-key`
+- `/v0/management/claude-api-key`
+- `/v0/management/codex-api-key`
+- `/v0/management/openai-compatibility`
+- `/v0/management/vertex-api-key`
 - `/v0/management/codex-auth-url`
 - `/v0/management/anthropic-auth-url`
 - `/v0/management/gemini-cli-auth-url`
@@ -104,6 +116,7 @@ Leaving sandbox enabled caused localhost `Operation not permitted` failures.
 - A tray-opening crash caused by touching `NSApp` too early in `App.init()` was fixed by moving activation policy setup into `applicationDidFinishLaunching`.
 - Tray reopening previously created multiple main windows; this was fixed by switching the main scene from `WindowGroup` to a single `Window`.
 - Menu bar opening now defers `openWindow` and `NSApp.activate` to the next main-thread turn to avoid AppKit layout recursion warnings while the menu is still collapsing.
+- Provider save behavior previously looked stale because UI toggles were reading old per-model state instead of the provider's selected model set. The provider model rows are now rendered from the provider's selected models, and save completion rereads provider state from management APIs.
 
 ## Remaining Work
 

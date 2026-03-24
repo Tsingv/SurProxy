@@ -68,6 +68,15 @@ struct ManagementStaticModelDefinitionsResponse: Decodable {
     let models: [ManagementAuthFileModel]
 }
 
+struct ManagementProviderEntry {
+    let name: String?
+    let baseURL: String?
+    let apiKey: String?
+    let headers: [String: String]
+    let configuredModels: [ManagementAuthFileModel]
+    let rawObject: [String: Any]
+}
+
 final class ManagementAPIClient {
     private let session: URLSession
 
@@ -169,6 +178,66 @@ final class ManagementAPIClient {
         return response.models
     }
 
+    func providerEntries(baseURL: URL, key: String, configKey: String) async throws -> [ManagementProviderEntry] {
+        let data = try await requestData(
+            baseURL: baseURL,
+            path: configKey,
+            queryItems: [],
+            key: key,
+            method: "GET",
+            body: nil
+        )
+        let object = try JSONSerialization.jsonObject(with: data)
+        guard let wrapper = object as? [String: Any], let items = wrapper[configKey] as? [[String: Any]] else {
+            return []
+        }
+        return items.map(Self.parseProviderEntry)
+    }
+
+    func putProviderEntries(baseURL: URL, key: String, configKey: String, entries: [[String: Any]]) async throws {
+        let body = try JSONSerialization.data(withJSONObject: entries)
+        let _: EmptyResponse = try await request(
+            baseURL: baseURL,
+            path: configKey,
+            queryItems: [],
+            key: key,
+            method: "PUT",
+            body: body
+        )
+    }
+
+    func patchProviderEntry(baseURL: URL, key: String, configKey: String, index: Int, value: [String: Any]) async throws {
+        let body = try JSONSerialization.data(withJSONObject: [
+            "index": index,
+            "value": value
+        ])
+        let _: EmptyResponse = try await request(
+            baseURL: baseURL,
+            path: configKey,
+            queryItems: [],
+            key: key,
+            method: "PATCH",
+            body: body
+        )
+    }
+
+    func fetchOfficialProviderModels(configKey: String, entry: ManagementProviderEntry) async throws -> [ManagementAuthFileModel] {
+        guard let baseURLString = entry.baseURL, let baseURL = URL(string: baseURLString) else {
+            return []
+        }
+
+        switch configKey {
+        case "openai-compatibility", "codex-api-key":
+            return try await fetchOpenAIStyleModels(baseURL: baseURL, bearerToken: entry.apiKey, extraHeaders: entry.headers)
+        case "claude-api-key":
+            return try await fetchClaudeModels(baseURL: baseURL, apiKey: entry.apiKey, extraHeaders: entry.headers)
+        case "gemini-api-key":
+            return try await fetchGeminiModels(baseURL: baseURL, apiKey: entry.apiKey, extraHeaders: entry.headers)
+        default:
+            return []
+        }
+    }
+
     func toggleAuthFile(baseURL: URL, key: String, name: String, disabled: Bool) async throws {
         let body = try JSONSerialization.data(withJSONObject: ["name": name, "disabled": disabled])
         let _: EmptyResponse = try await request(
@@ -178,6 +247,28 @@ final class ManagementAPIClient {
             key: key,
             method: "PATCH",
             body: body
+        )
+    }
+
+    func deleteAuthFile(baseURL: URL, key: String, name: String) async throws {
+        let _: EmptyResponse = try await request(
+            baseURL: baseURL,
+            path: "auth-files",
+            queryItems: [URLQueryItem(name: "name", value: name)],
+            key: key,
+            method: "DELETE",
+            body: nil
+        )
+    }
+
+    func deleteProviderEntry(baseURL: URL, key: String, configKey: String, index: Int) async throws {
+        let _: EmptyResponse = try await request(
+            baseURL: baseURL,
+            path: configKey,
+            queryItems: [URLQueryItem(name: "index", value: String(index))],
+            key: key,
+            method: "DELETE",
+            body: nil
         )
     }
 
@@ -338,6 +429,183 @@ final class ManagementAPIClient {
         }
     }
 
+    nonisolated private static func parseProviderEntry(_ object: [String: Any]) -> ManagementProviderEntry {
+        let name = trimmedStringValue(object["name"])
+        let baseURL = trimmedStringValue(object["base-url"])
+        let headers = stringDictionary(object["headers"]) ?? [:]
+        let rawModels = object["models"] as? [[String: Any]] ?? []
+        let configuredModels = rawModels.compactMap(parseProviderModel)
+        let apiKeyEntries = object["api-key-entries"] as? [[String: Any]] ?? []
+        let apiKey = trimmedStringValue(object["api-key"]) ?? apiKeyEntries.compactMap { trimmedStringValue($0["api-key"]) }.first
+
+        return ManagementProviderEntry(
+            name: name,
+            baseURL: baseURL,
+            apiKey: apiKey,
+            headers: headers,
+            configuredModels: configuredModels,
+            rawObject: object
+        )
+    }
+
+    nonisolated private static func parseProviderModel(_ object: [String: Any]) -> ManagementAuthFileModel? {
+        guard let id = trimmedStringValue(object["alias"]) ?? trimmedStringValue(object["name"]) else {
+            return nil
+        }
+        return ManagementAuthFileModel(
+            id: id,
+            displayName: trimmedStringValue(object["name"]),
+            type: trimmedStringValue(object["type"]),
+            ownedBy: nil
+        )
+    }
+
+    nonisolated private static func trimmedStringValue(_ raw: Any?) -> String? {
+        guard let value = stringValue(raw) else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func fetchOpenAIStyleModels(baseURL: URL, bearerToken: String?, extraHeaders: [String: String]) async throws -> [ManagementAuthFileModel] {
+        struct Response: Decodable {
+            struct Entry: Decodable {
+                let id: String
+                let ownedBy: String?
+
+                enum CodingKeys: String, CodingKey {
+                    case id
+                    case ownedBy = "owned_by"
+                }
+            }
+
+            let data: [Entry]
+        }
+
+        let requestURL = makeOpenAIModelsURL(from: baseURL)
+        var request = URLRequest(url: requestURL)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 10
+        if let bearerToken, !bearerToken.isEmpty {
+            request.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
+        }
+        extraHeaders.forEach { request.setValue($1, forHTTPHeaderField: $0) }
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            return []
+        }
+        let decoded = try JSONDecoder().decode(Response.self, from: data)
+        return decoded.data.map { ManagementAuthFileModel(id: $0.id, displayName: nil, type: "model", ownedBy: $0.ownedBy) }
+    }
+
+    private func fetchClaudeModels(baseURL: URL, apiKey: String?, extraHeaders: [String: String]) async throws -> [ManagementAuthFileModel] {
+        struct Response: Decodable {
+            struct Entry: Decodable {
+                let id: String
+                let displayName: String?
+                let type: String?
+
+                enum CodingKeys: String, CodingKey {
+                    case id
+                    case displayName = "display_name"
+                    case type
+                }
+            }
+
+            let data: [Entry]
+        }
+
+        let requestURL = makeClaudeModelsURL(from: baseURL)
+        var request = URLRequest(url: requestURL)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 10
+        if let apiKey, !apiKey.isEmpty {
+            request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        }
+        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        extraHeaders.forEach { request.setValue($1, forHTTPHeaderField: $0) }
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            return []
+        }
+        let decoded = try JSONDecoder().decode(Response.self, from: data)
+        return decoded.data.map { ManagementAuthFileModel(id: $0.id, displayName: $0.displayName, type: $0.type, ownedBy: "Anthropic") }
+    }
+
+    private func fetchGeminiModels(baseURL: URL, apiKey: String?, extraHeaders: [String: String]) async throws -> [ManagementAuthFileModel] {
+        struct Response: Decodable {
+            struct Entry: Decodable {
+                let name: String
+                let displayName: String?
+
+                enum CodingKeys: String, CodingKey {
+                    case name
+                    case displayName = "displayName"
+                }
+            }
+
+            let models: [Entry]
+        }
+
+        guard let apiKey, !apiKey.isEmpty else {
+            return []
+        }
+
+        guard var components = URLComponents(url: makeGeminiModelsURL(from: baseURL), resolvingAgainstBaseURL: false) else {
+            return []
+        }
+        components.queryItems = (components.queryItems ?? []) + [URLQueryItem(name: "key", value: apiKey)]
+        guard let requestURL = components.url else {
+            return []
+        }
+
+        var request = URLRequest(url: requestURL)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 10
+        extraHeaders.forEach { request.setValue($1, forHTTPHeaderField: $0) }
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            return []
+        }
+        let decoded = try JSONDecoder().decode(Response.self, from: data)
+        return decoded.models.map {
+            let modelID = $0.name.replacingOccurrences(of: "models/", with: "")
+            return ManagementAuthFileModel(id: modelID, displayName: $0.displayName, type: "model", ownedBy: "Google")
+        }
+    }
+
+    private func makeOpenAIModelsURL(from baseURL: URL) -> URL {
+        let normalizedPath = baseURL.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if normalizedPath.hasSuffix("models") {
+            return baseURL
+        }
+        if normalizedPath.hasSuffix("v1") {
+            return baseURL.appendingPathComponent("models")
+        }
+        return baseURL.appendingPathComponent("v1").appendingPathComponent("models")
+    }
+
+    private func makeClaudeModelsURL(from baseURL: URL) -> URL {
+        let normalizedPath = baseURL.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if normalizedPath.hasSuffix("models") {
+            return baseURL
+        }
+        if normalizedPath.hasSuffix("v1") {
+            return baseURL.appendingPathComponent("models")
+        }
+        return baseURL.appendingPathComponent("v1").appendingPathComponent("models")
+    }
+
+    private func makeGeminiModelsURL(from baseURL: URL) -> URL {
+        let normalizedPath = baseURL.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if normalizedPath.hasSuffix("models") {
+            return baseURL
+        }
+        if normalizedPath.contains("v1beta") || normalizedPath.contains("v1") {
+            return baseURL.appendingPathComponent("models")
+        }
+        return baseURL.appendingPathComponent("v1beta").appendingPathComponent("models")
+    }
+
     private static func parseAuthFile(_ payload: [String: Any]) -> ManagementAuthFile {
         let fieldsPayload = payload["fields"] as? [String: Any]
         let fields = fieldsPayload?.reduce(into: [String: String]()) { result, entry in
@@ -408,7 +676,7 @@ final class ManagementAPIClient {
         }
     }
 
-    private static func stringValue(_ raw: Any?) -> String? {
+    nonisolated private static func stringValue(_ raw: Any?) -> String? {
         switch raw {
         case let value as String:
             return value
@@ -419,7 +687,7 @@ final class ManagementAPIClient {
         }
     }
 
-    private static func stringDictionary(_ raw: Any?) -> [String: String]? {
+    nonisolated private static func stringDictionary(_ raw: Any?) -> [String: String]? {
         guard let payload = raw as? [String: Any] else {
             return nil
         }
@@ -429,6 +697,7 @@ final class ManagementAPIClient {
             }
         }
     }
+
 }
 
 private struct EmptyResponse: Decodable {}

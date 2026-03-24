@@ -22,11 +22,17 @@ The product boundary is:
 Important upstream APIs currently used by SurProxy:
 
 - `/v0/management/config`
+- `/v0/management/config.yaml`
 - `/v0/management/latest-version`
 - `/v0/management/auth-files`
 - `/v0/management/auth-files/models`
 - `/v0/management/auth-files/status`
 - `/v0/management/model-definitions/:channel`
+- `/v0/management/gemini-api-key`
+- `/v0/management/claude-api-key`
+- `/v0/management/codex-api-key`
+- `/v0/management/openai-compatibility`
+- `/v0/management/vertex-api-key`
 - `/v0/management/codex-auth-url`
 - `/v0/management/anthropic-auth-url`
 - `/v0/management/gemini-cli-auth-url`
@@ -226,11 +232,25 @@ Current display behavior:
 - each OAuth card can show copyable model IDs from upstream
 - OAuth cards are rendered in an adaptive multi-column grid based on available window width
 - model lists use a collapsed disclosure style by default to reduce vertical space
+- provider cards are also rendered in an adaptive grid
+- provider model lists are loaded lazily when a provider disclosure group is expanded
+- provider model toggles render from the provider's selected model set, not from a stale per-row cache bit
+- provider cards still expose the model disclosure even when zero models are currently enabled, so expanding can refresh the live catalog
+- deprecated provider models that remain configured but disappear from the live remote catalog should stay visible and be marked as deprecated
 - the main window is now a single `Window`, not a `WindowGroup`
 - the app stays alive in the menu bar after the main window is closed
 - the tray menu can reopen the main window, toggle service start/stop, and quit the app
-- provider routing is currently read-only summary UI; it is not a true config editor yet
-- provider summary depends on the real upstream config, so if provider entries disappear after reload it usually indicates config was overwritten rather than a UI-only problem
+- provider cards support add, rename where upstream allows it, delete with confirmation, and model selection persistence through management APIs
+- provider summary depends on the real upstream config and management APIs, so if provider entries disappear after reload it usually indicates config was overwritten rather than a UI-only problem
+- provider enabled-model state should come from management APIs rather than direct config file reads in the UI layer
+- provider model saves should reread provider state from management APIs immediately after write completion instead of relying on arbitrary delays
+
+### Provider mutation details
+
+- `openai-compatibility`, `claude-api-key`, `codex-api-key`, and `vertex-api-key` provider model saves currently use per-entry `PATCH`
+- `gemini-api-key` still uses grouped `PUT` for model changes because upstream patch support does not expose equivalent `models` behavior there
+- after provider writes complete, SurProxy refreshes provider state from management APIs and then refreshes the whole app snapshot
+- UI mutations use a global loading overlay while API calls are in flight
 
 ## Important macOS Packaging Decision
 

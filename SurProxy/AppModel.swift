@@ -8,6 +8,8 @@
 import Foundation
 
 enum ProxyRuntimeState: String, CaseIterable, Identifiable {
+    case starting
+    case stopping
     case running
     case stopped
     case degraded
@@ -16,6 +18,10 @@ enum ProxyRuntimeState: String, CaseIterable, Identifiable {
 
     nonisolated var title: String {
         switch self {
+        case .starting:
+            return "Starting"
+        case .stopping:
+            return "Stopping"
         case .running:
             return "Running"
         case .stopped:
@@ -100,12 +106,41 @@ struct OAuthLoginSession {
 
 struct ProviderRoute: Identifiable, Hashable {
     let id: UUID
+    var stableKey: String
     var name: String
+    var kindTitle: String
     var baseURL: String
     var modelCount: Int
     var isEnabled: Bool
     var isEditable: Bool
+    var canRename: Bool
     var configKey: String
+    var entryIndex: Int
+    var selectedModels: Set<String>
+    var models: [ProviderModel]
+}
+
+struct ProviderModel: Identifiable, Hashable {
+    let id: String
+    var displayName: String?
+    var type: String?
+    var ownedBy: String?
+    var isEnabled: Bool
+    var isDeprecated: Bool
+
+    var subtitle: String {
+        var parts: [String] = []
+        if let displayName, !displayName.isEmpty, displayName != id {
+            parts.append(displayName)
+        }
+        if let type, !type.isEmpty {
+            parts.append(type)
+        }
+        if let ownedBy, !ownedBy.isEmpty {
+            parts.append(ownedBy)
+        }
+        return parts.joined(separator: " · ")
+    }
 }
 
 enum ProviderConfigurationKind: String, CaseIterable, Identifiable {
@@ -203,6 +238,50 @@ struct ProviderDraftValidation {
 
     var hasAnyError: Bool {
         providerName != nil || baseURL != nil || apiKey != nil || modelName != nil || modelAlias != nil
+    }
+}
+
+struct PendingOAuthDeletion: Identifiable {
+    let id: UUID
+    let profileID: UUID
+    let displayName: String
+}
+
+struct PendingProviderDeletion: Identifiable {
+    let id: String
+    let stableKey: String
+    let displayName: String
+}
+
+enum PendingDeletionConfirmation: Identifiable {
+    case oauth(PendingOAuthDeletion)
+    case provider(PendingProviderDeletion)
+
+    var id: String {
+        switch self {
+        case .oauth(let value):
+            return "oauth:\(value.id.uuidString)"
+        case .provider(let value):
+            return "provider:\(value.id)"
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .oauth:
+            return "Delete OAuth File?"
+        case .provider:
+            return "Delete Provider?"
+        }
+    }
+
+    var message: String {
+        switch self {
+        case .oauth(let value):
+            return "This will remove \(value.displayName) from CLIProxyAPIPlus auth storage."
+        case .provider(let value):
+            return "This will delete \(value.displayName) from CLIProxyAPIPlus config."
+        }
     }
 }
 

@@ -17,8 +17,13 @@ final class AppViewModel: ObservableObject {
     @Published var oauthInFlightProvider: OAuthLoginProvider?
     @Published var providerDraft = ProviderDraft()
     @Published var providerDraftValidation = ProviderDraftValidation()
+    @Published var pendingProviderSelectedModels: [String: Set<String>] = [:]
+    @Published var providerModelLoadingKeys: Set<String> = []
+    @Published var providerNameDrafts: [String: String] = [:]
+    @Published var pendingDeletionConfirmation: PendingDeletionConfirmation?
 
     private let service: ProxyServicing
+    private var providerModelLoadGeneration: Int = 0
 
     init(service: ProxyServicing) {
         self.service = service
@@ -34,11 +39,15 @@ final class AppViewModel: ObservableObject {
 
         do {
             snapshot = try await service.setRuntimeState(.running)
+            pendingProviderSelectedModels = [:]
+            syncProviderNameDrafts()
             lastErrorMessage = nil
         } catch {
             lastErrorMessage = error.localizedDescription
             do {
                 snapshot = try await service.loadSnapshot()
+                pendingProviderSelectedModels = [:]
+                syncProviderNameDrafts()
             } catch {
                 lastErrorMessage = error.localizedDescription
             }
@@ -52,14 +61,25 @@ final class AppViewModel: ObservableObject {
     }
 
     func startProxy() async {
+        snapshot.runtimeState = .starting
         await performMutation { [self] in
             try await self.service.setRuntimeState(.running)
         }
     }
 
     func stopProxy() async {
+        snapshot.runtimeState = .stopping
         await performMutation { [self] in
             try await self.service.setRuntimeState(.stopped)
+        }
+    }
+
+    func toggleProxy() async {
+        switch snapshot.runtimeState {
+        case .running, .starting:
+            await stopProxy()
+        case .stopped, .stopping, .degraded:
+            await startProxy()
         }
     }
 
@@ -109,6 +129,79 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    func setProviderModel(providerID: UUID, modelID: String, isEnabled: Bool) async {
+        guard let provider = snapshot.providers.first(where: { $0.id == providerID }) else {
+            return
+        }
+
+        var selected = pendingProviderSelectedModels[provider.stableKey] ?? provider.selectedModels
+        if isEnabled {
+            selected.insert(modelID)
+        } else {
+            selected.remove(modelID)
+        }
+        pendingProviderSelectedModels[provider.stableKey] = selected
+        snapshot.providers = snapshot.providers.map { route in
+            guard route.id == providerID else { return route }
+            var updated = route
+            updated.selectedModels = selected
+            updated.models = route.models.map { model in
+                var updatedModel = model
+                if updatedModel.id == modelID {
+                    updatedModel.isEnabled = isEnabled
+                }
+                return updatedModel
+            }
+            return updated
+        }
+    }
+
+    func saveProviderChanges() async {
+        let changes = pendingProviderSelectedModels
+        guard !changes.isEmpty else { return }
+        providerModelLoadGeneration += 1
+
+        await performMutation { [self] in
+            try await self.service.saveProviderModelStates(changes)
+        }
+        pendingProviderSelectedModels = [:]
+    }
+
+    var hasPendingProviderChanges: Bool {
+        !pendingProviderSelectedModels.isEmpty
+    }
+
+    func loadProviderModels(stableKey: String) {
+        guard !providerModelLoadingKeys.contains(stableKey) else { return }
+        providerModelLoadingKeys.insert(stableKey)
+        let generation = providerModelLoadGeneration
+
+        Task {
+            defer { providerModelLoadingKeys.remove(stableKey) }
+            do {
+                let models = try await service.loadProviderModels(stableKey: stableKey)
+                guard generation == providerModelLoadGeneration else {
+                    return
+                }
+                if let providerIndex = snapshot.providers.firstIndex(where: { $0.stableKey == stableKey }) {
+                    var provider = snapshot.providers[providerIndex]
+                    let selected = pendingProviderSelectedModels[stableKey] ?? provider.selectedModels
+                    provider.selectedModels = selected
+                    provider.models = models.map { model in
+                        var updated = model
+                        updated.isEnabled = selected.contains(model.id)
+                        return updated
+                    }
+                    provider.modelCount = provider.models.count
+                    snapshot.providers[providerIndex] = provider
+                }
+                lastErrorMessage = nil
+            } catch {
+                lastErrorMessage = error.localizedDescription
+            }
+        }
+    }
+
     func setProviderKind(_ kind: ProviderConfigurationKind) {
         providerDraft.kind = kind
         providerDraft.applyKindDefaults()
@@ -128,6 +221,50 @@ final class AppViewModel: ObservableObject {
         providerDraftValidation = ProviderDraftValidation()
     }
 
+    func setProviderNameDraft(stableKey: String, value: String) {
+        providerNameDrafts[stableKey] = value
+    }
+
+    func saveProviderName(stableKey: String) async {
+        guard let provider = snapshot.providers.first(where: { $0.stableKey == stableKey }) else {
+            return
+        }
+        let draft = (providerNameDrafts[stableKey] ?? provider.name).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !draft.isEmpty, draft != provider.name else { return }
+
+        await performMutation { [self] in
+            try await self.service.renameProvider(stableKey: stableKey, newName: draft)
+        }
+    }
+
+    func confirmDeleteOAuth(id: UUID) {
+        guard let profile = snapshot.oauthProfiles.first(where: { $0.id == id }) else { return }
+        pendingDeletionConfirmation = .oauth(
+            PendingOAuthDeletion(id: id, profileID: id, displayName: profile.displayName)
+        )
+    }
+
+    func confirmDeleteProvider(stableKey: String) {
+        guard let provider = snapshot.providers.first(where: { $0.stableKey == stableKey }) else { return }
+        pendingDeletionConfirmation = .provider(
+            PendingProviderDeletion(id: stableKey, stableKey: stableKey, displayName: provider.name)
+        )
+    }
+
+    func deleteConfirmedItem(_ pendingDeletionConfirmation: PendingDeletionConfirmation) async {
+        self.pendingDeletionConfirmation = nil
+        switch pendingDeletionConfirmation {
+        case .oauth(let pendingOAuthDeletion):
+            await performMutation { [self] in
+                return try await self.service.deleteOAuthProfile(id: pendingOAuthDeletion.profileID)
+            }
+        case .provider(let pendingProviderDeletion):
+            await performMutation { [self] in
+                return try await self.service.deleteProvider(stableKey: pendingProviderDeletion.stableKey)
+            }
+        }
+    }
+
     func shutdown() {
         service.shutdown()
     }
@@ -144,10 +281,16 @@ final class AppViewModel: ObservableObject {
 
         do {
             snapshot = try await operation()
+            pendingProviderSelectedModels = [:]
+            syncProviderNameDrafts()
             lastErrorMessage = nil
         } catch {
             lastErrorMessage = error.localizedDescription
         }
+    }
+
+    private func syncProviderNameDrafts() {
+        providerNameDrafts = Dictionary(uniqueKeysWithValues: snapshot.providers.map { ($0.stableKey, $0.name) })
     }
 
     private func validate(_ draft: ProviderDraft) -> ProviderDraftValidation {
