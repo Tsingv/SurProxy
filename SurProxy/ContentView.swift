@@ -11,6 +11,7 @@ private enum SidebarSection: String, CaseIterable, Identifiable, Hashable {
     case status
     case oauth
     case providers
+    case apiKeys
 
     var id: String { rawValue }
 
@@ -22,6 +23,8 @@ private enum SidebarSection: String, CaseIterable, Identifiable, Hashable {
             return "OAuth"
         case .providers:
             return "Provider"
+        case .apiKeys:
+            return "API Keys"
         }
     }
 
@@ -33,6 +36,8 @@ private enum SidebarSection: String, CaseIterable, Identifiable, Hashable {
             return "person.badge.key"
         case .providers:
             return "point.3.connected.trianglepath.dotted"
+        case .apiKeys:
+            return "key.horizontal"
         }
     }
 }
@@ -63,6 +68,8 @@ struct ContentView: View {
                             oauthCard
                         case .providers:
                             providerCard
+                        case .apiKeys:
+                            apiKeysCard
                         }
                     }
                     .padding(24)
@@ -449,6 +456,67 @@ struct ContentView: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(viewModel.isLoading)
+                    }
+                }
+            }
+        }
+    }
+
+    private var apiKeysCard: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("API Keys")
+                    .font(.title3.weight(.semibold))
+
+                Text("These keys are served by CLIProxyAPIPlus for downstream applications calling your local proxy.")
+                    .foregroundStyle(.secondary)
+
+                if let lastErrorMessage = viewModel.lastErrorMessage {
+                    Text(lastErrorMessage)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+
+                HStack(spacing: 12) {
+                    TextField("New API Key", text: $viewModel.apiKeyDraft)
+                        .textFieldStyle(.roundedBorder)
+
+                    Button("Add API Key") {
+                        Task { await viewModel.addAPIKey() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(viewModel.isLoading || viewModel.apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+
+                if viewModel.snapshot.apiKeys.isEmpty {
+                    Text("No downstream API keys configured yet.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(viewModel.snapshot.apiKeys) { entry in
+                            HStack(spacing: 12) {
+                                Text(entry.value)
+                                    .font(.system(.body, design: .monospaced))
+                                    .textSelection(.enabled)
+                                    .lineLimit(1)
+
+                                Spacer(minLength: 8)
+
+                                Button("Copy") {
+                                    viewModel.copyAPIKey(entry.value)
+                                }
+                                .buttonStyle(.bordered)
+
+                                Button(role: .destructive) {
+                                    viewModel.confirmDeleteAPIKey(entry.value)
+                                } label: {
+                                    Image(systemName: "trash")
+                                }
+                                .buttonStyle(.borderless)
+                                .disabled(viewModel.isLoading)
+                            }
+                            Divider()
+                        }
                     }
                 }
             }

@@ -49,6 +49,7 @@ The repository now contains a working native macOS host for `CLIProxyAPIPlus` wi
 - `ProxyService` coordinating runtime launch, health checks, management API reads, and auth toggles
 - `RuntimeManager` handling bundled runtime installation, process start/stop, config generation, and in-memory runtime logs
 - dashboard sections for runtime state, packaged runtime binary, OAuth login, OAuth file list, and provider routing summary
+- a dedicated API Keys section for downstream caller credentials managed by `CLIProxyAPIPlus`
 - OAuth cards that can show upstream model IDs and copy them directly from the native UI
 
 Current runtime layout:
@@ -86,6 +87,7 @@ Important behavior:
 - `/v0/management/auth-files`
 - `/v0/management/auth-files/models`
 - `/v0/management/auth-files/status`
+- `/v0/management/api-keys`
 - `/v0/management/model-definitions/:channel`
 - `/v0/management/gemini-api-key`
 - `/v0/management/claude-api-key`
@@ -118,6 +120,7 @@ Leaving sandbox enabled caused localhost `Operation not permitted` failures.
 - Tray reopening previously created multiple main windows; this was fixed by switching the main scene from `WindowGroup` to a single `Window`.
 - Menu bar opening now defers `openWindow` and `NSApp.activate` to the next main-thread turn to avoid AppKit layout recursion warnings while the menu is still collapsing.
 - Provider save behavior previously looked stale because UI toggles were reading old per-model state instead of the provider's selected model set. The provider model rows are now rendered from the provider's selected models, and save completion rereads provider state from management APIs.
+- Downstream API Key management is provided by upstream `/v0/management/api-keys`; adding a key must use the `PATCH` shape with both `old` and `new` fields because upstream string-list patch handlers reject a body that only contains `new`.
 
 ## Remaining Work
 

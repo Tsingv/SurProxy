@@ -27,6 +27,7 @@ Important upstream APIs currently used by SurProxy:
 - `/v0/management/auth-files`
 - `/v0/management/auth-files/models`
 - `/v0/management/auth-files/status`
+- `/v0/management/api-keys`
 - `/v0/management/model-definitions/:channel`
 - `/v0/management/gemini-api-key`
 - `/v0/management/claude-api-key`
@@ -211,6 +212,7 @@ Current UI sections:
 - OAuth login buttons
 - OAuth file list
 - provider routing summary
+- API Key management for downstream callers
 - left sidebar category navigation: `Status`, `OAuth`, `Provider`
 
 Current actions exposed:
@@ -224,6 +226,7 @@ Current actions exposed:
 - Login Gemini
 - toggle auth file active/inactive
 - add provider entries through upstream `config.yaml` management
+- add, copy, and delete downstream API keys through upstream `/v0/management/api-keys`
 
 Current display behavior:
 
@@ -245,6 +248,7 @@ Current display behavior:
 - provider enabled-model state should come from management APIs rather than direct config file reads in the UI layer
 - provider model saves should reread provider state from management APIs immediately after write completion instead of relying on arbitrary delays
 - after provider model saves succeed, the app shows a short-lived floating notice instead of a persistent inline message because the final upstream-visible state may still settle shortly after the write; users can re-expand the model list to refresh on demand
+- API Keys are managed as a plain upstream string list; when appending a key through `PATCH /v0/management/api-keys`, the request must include both `old` and `new` because upstream rejects a payload that only includes `new`
 
 ### Provider mutation details
 

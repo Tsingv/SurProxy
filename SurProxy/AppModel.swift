@@ -241,6 +241,11 @@ struct ProviderDraftValidation {
     }
 }
 
+struct APIKeyEntry: Identifiable, Hashable {
+    let id: String
+    var value: String
+}
+
 struct PendingOAuthDeletion: Identifiable {
     let id: UUID
     let profileID: UUID
@@ -253,9 +258,15 @@ struct PendingProviderDeletion: Identifiable {
     let displayName: String
 }
 
+struct PendingAPIKeyDeletion: Identifiable {
+    let id: String
+    let value: String
+}
+
 enum PendingDeletionConfirmation: Identifiable {
     case oauth(PendingOAuthDeletion)
     case provider(PendingProviderDeletion)
+    case apiKey(PendingAPIKeyDeletion)
 
     var id: String {
         switch self {
@@ -263,6 +274,8 @@ enum PendingDeletionConfirmation: Identifiable {
             return "oauth:\(value.id.uuidString)"
         case .provider(let value):
             return "provider:\(value.id)"
+        case .apiKey(let value):
+            return "api-key:\(value.id)"
         }
     }
 
@@ -272,6 +285,8 @@ enum PendingDeletionConfirmation: Identifiable {
             return "Delete OAuth File?"
         case .provider:
             return "Delete Provider?"
+        case .apiKey:
+            return "Delete API Key?"
         }
     }
 
@@ -281,6 +296,8 @@ enum PendingDeletionConfirmation: Identifiable {
             return "This will remove \(value.displayName) from CLIProxyAPIPlus auth storage."
         case .provider(let value):
             return "This will delete \(value.displayName) from CLIProxyAPIPlus config."
+        case .apiKey:
+            return "This will remove the selected downstream API key from CLIProxyAPIPlus config."
         }
     }
 }
@@ -327,6 +344,7 @@ struct ProxyStatusSnapshot {
     var runtimeNotice: String?
     var oauthProfiles: [OAuthProfile]
     var providers: [ProviderRoute]
+    var apiKeys: [APIKeyEntry]
 
     static func bootstrap() -> ProxyStatusSnapshot {
         ProxyStatusSnapshot(
@@ -349,7 +367,8 @@ struct ProxyStatusSnapshot {
             existingRuntimeDetected: false,
             runtimeNotice: nil,
             oauthProfiles: [],
-            providers: []
+            providers: [],
+            apiKeys: []
         )
     }
 }
