@@ -1,10 +1,13 @@
 # SurProxy
 
-![SurProxy App Icon](Docs/Brand/surproxy_app_icon_1024.png)
+<img src="Docs/Brand/surproxy_app_icon_1024.png" alt="SurProxy App Icon" width="120" />
 
 SurProxy is a native macOS front end for `CLIProxyAPIPlus`.
 
 It turns an upstream local proxy runtime into a Mac app with a real control surface: start and stop the runtime, inspect OAuth auth files, manage provider routing, rotate downstream API keys, and keep the service available from the menu bar after the main window is closed.
+
+> `CLIProxyAPIPlus` remains the runtime and protocol source of truth.
+> SurProxy is the native macOS host, control plane, and UX layer.
 
 ## What It Is
 
@@ -28,6 +31,15 @@ SurProxy adds the native host layer:
 
 ## Product Highlights
 
+- **Native runtime controls**: `Start`, `Stop`, `Reload Config`, and bundled runtime reinstall actions
+- **OAuth management**: upstream login entry points plus auth-file visibility with local disk fallback
+- **Provider routing UI**: lazy model loading, rename/delete where supported, and per-provider proxy overrides
+- **Downstream API keys**: managed through upstream management APIs
+- **Global settings**: dedicated `Settings` page for SurProxy-managed `proxy-url`, `port`, and `auth-dir`
+- **Menu bar presence**: the app can keep running after the main window closes
+
+## At A Glance
+
 - Native runtime dashboard with `Start`, `Stop`, `Reload Config`, and bundled runtime reinstall actions
 - OAuth login entry points for the upstream providers supported by `CLIProxyAPIPlus`
 - OAuth auth-file visibility from the management API, with local disk fallback when the API returns nothing usable
@@ -43,15 +55,17 @@ SurProxy adds the native host layer:
 
 SurProxy intentionally separates its managed runtime config from the user's default upstream config.
 
-Runtime layout:
+### Runtime Layout
 
-- Bundled runtime: `SurProxy.app/Contents/Resources/cliproxyapiplus`
-- Active runtime: `~/Library/Application Support/SurProxy/runtime/cliproxyapiplus`
-- SurProxy-managed config: `~/Library/Application Support/SurProxy/config.yaml`
-- Runtime manifest: `~/Library/Application Support/SurProxy/runtime-manifest.json`
-- Shared auth directory: `~/.cli-proxy-api/`
+| Component | Location |
+| --- | --- |
+| Bundled runtime | `SurProxy.app/Contents/Resources/cliproxyapiplus` |
+| Active runtime | `~/Library/Application Support/SurProxy/runtime/cliproxyapiplus` |
+| SurProxy-managed config | `~/Library/Application Support/SurProxy/config.yaml` |
+| Runtime manifest | `~/Library/Application Support/SurProxy/runtime-manifest.json` |
+| Shared auth directory | `~/.cli-proxy-api/` |
 
-Why this split exists:
+### Why This Split Exists
 
 - users may already have a different `~/.cli-proxy-api/config.yaml`
 - users may already be using a different port or management key
@@ -61,7 +75,7 @@ Why this split exists:
 
 SurProxy reads and writes upstream state through management APIs wherever possible.
 
-Important current behavior:
+### Current Behavior
 
 - OAuth proxy behavior is treated as a global runtime setting, not a per-auth-file override
 - provider proxy overrides remain per-provider and follow upstream config semantics
@@ -73,35 +87,35 @@ Important current behavior:
 
 Brand and icon source materials live in [Docs](Docs/README.md).
 
-Included assets:
+### Included Assets
 
 - [Icon design philosophy](Docs/Brand/icon_design_philosophy.md)
 - [App icon SVG source](Docs/Brand/surproxy_app_icon.svg)
 - [App icon PNG preview](Docs/Brand/surproxy_app_icon_1024.png)
 - [Tray icon SVG source](Docs/Brand/surproxy_tray_icon.svg)
 
-The current shipped raster assets are wired through:
+### Asset Catalog Wiring
 
 - `SurProxy/Assets.xcassets/AppIcon.appiconset`
 - `SurProxy/Assets.xcassets/TrayIcon.imageset`
 
 ## Development
 
-Upstream source is vendored as a submodule:
+### Upstream Source
 
 - `Vendor/CLIProxyAPIPlus`
 
-Current pinned upstream version:
+### Current Pinned Version
 
 - tag: `v6.9.1-0`
 - commit: `1dc4ecb1b8a6412954dd37ce4bfe0610478edcbc`
 
-Useful scripts:
+### Useful Scripts
 
 - `Scripts/build_cliproxy_runtime.sh`
 - `Scripts/stage_runtime_binary.sh`
 
-Build verification used during development:
+### Build Verification
 
 ```bash
 xcodebuild -project SurProxy.xcodeproj -scheme SurProxy -sdk macosx -derivedDataPath /tmp/SurProxyDerivedData CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO -quiet build
