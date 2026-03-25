@@ -9,6 +9,8 @@ The product boundary is:
 - `CLIProxyAPIPlus` remains the source of truth for proxy serving, OAuth flows, auth file management, config semantics, and management APIs.
 - SurProxy is the native macOS host and control plane.
 - SurProxy should not reimplement upstream OAuth logic, token formats, or provider-specific auth behavior.
+- Never commit or publish user-specific absolute filesystem paths, home directory names, or other local machine identifiers in repo files, generated docs, screenshots, examples, or history rewrites.
+- If such sensitive local-path data is committed by mistake, remove it from the working tree, rewrite git history to purge it, and force-push the cleaned history if the user asks for the remote to be sanitized too.
 
 ## Upstream Dependency
 

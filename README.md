@@ -82,8 +82,8 @@ Included assets:
 
 The current shipped raster assets are wired through:
 
-- [AppIcon.appiconset](SurProxy/Assets.xcassets/AppIcon.appiconset)
-- [TrayIcon.imageset](SurProxy/Assets.xcassets/TrayIcon.imageset)
+- `SurProxy/Assets.xcassets/AppIcon.appiconset`
+- `SurProxy/Assets.xcassets/TrayIcon.imageset`
 
 ## Development
 
@@ -98,8 +98,8 @@ Current pinned upstream version:
 
 Useful scripts:
 
-- [build_cliproxy_runtime.sh](Scripts/build_cliproxy_runtime.sh)
-- [stage_runtime_binary.sh](Scripts/stage_runtime_binary.sh)
+- `Scripts/build_cliproxy_runtime.sh`
+- `Scripts/stage_runtime_binary.sh`
 
 Build verification used during development:
 
