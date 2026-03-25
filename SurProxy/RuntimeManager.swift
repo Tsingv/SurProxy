@@ -38,7 +38,7 @@ final class RuntimeManager {
     func prepareRuntime(paths: RuntimePaths, manifest: RuntimeManifest) throws -> RuntimeManifest {
         try fileManager.createDirectory(at: paths.appSupportDirectory, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: paths.runtimeDirectory, withIntermediateDirectories: true)
-        try fileManager.createDirectory(at: paths.authDirectory, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: URL(fileURLWithPath: manifest.authDirectoryPath, isDirectory: true), withIntermediateDirectories: true)
 
         var nextManifest = manifest
 
@@ -110,13 +110,13 @@ final class RuntimeManager {
            !existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             yaml = Self.updatingManagedConfig(
                 existing,
-                authDirectory: paths.authDirectory.path,
+                authDirectory: manifest.authDirectoryPath,
                 port: manifest.port,
                 managementKey: manifest.managementKey
             )
         } else {
             yaml = Self.defaultConfig(
-                authDirectory: paths.authDirectory.path,
+                authDirectory: manifest.authDirectoryPath,
                 port: manifest.port,
                 managementKey: manifest.managementKey
             )
@@ -173,6 +173,7 @@ final class RuntimeManager {
         guard let process else { return }
         if process.isRunning {
             process.terminate()
+            return
         }
         outputPipe?.fileHandleForReading.readabilityHandler = nil
         outputPipe = nil

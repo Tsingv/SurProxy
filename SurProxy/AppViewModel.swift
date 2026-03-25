@@ -18,6 +18,8 @@ final class AppViewModel: ObservableObject {
     @Published var oauthInFlightProvider: OAuthLoginProvider?
     @Published var providerDraft = ProviderDraft()
     @Published var providerDraftValidation = ProviderDraftValidation()
+    @Published var globalSettingsDraft = GlobalSettingsDraft()
+    @Published var globalSettingsValidation = GlobalSettingsValidation()
     @Published var apiKeyDraft = ""
     @Published var oauthPromptState: OAuthLoginPromptState?
     @Published var proxyEditPromptState: ProxyEditPromptState?
@@ -25,6 +27,7 @@ final class AppViewModel: ObservableObject {
     @Published var providerModelLoadingKeys: Set<String> = []
     @Published var providerNameDrafts: [String: String] = [:]
     @Published var pendingDeletionConfirmation: PendingDeletionConfirmation?
+    @Published var isResetSettingsConfirmationPresented = false
 
     private let service: ProxyServicing
     private var providerModelLoadGeneration: Int = 0
@@ -49,6 +52,7 @@ final class AppViewModel: ObservableObject {
             snapshot = try await service.setRuntimeState(.running)
             pendingProviderSelectedModels = [:]
             syncProviderNameDrafts()
+            syncGlobalSettingsDraft()
             lastErrorMessage = nil
             providerSaveNotice = nil
         } catch {
@@ -57,6 +61,7 @@ final class AppViewModel: ObservableObject {
                 snapshot = try await service.loadSnapshot()
                 pendingProviderSelectedModels = [:]
                 syncProviderNameDrafts()
+                syncGlobalSettingsDraft()
             } catch {
                 lastErrorMessage = error.localizedDescription
             }
@@ -157,26 +162,6 @@ final class AppViewModel: ObservableObject {
     func setOAuthProfile(id: UUID, isActive: Bool) async {
         await performMutation { [self] in
             try await self.service.setOAuthProfile(id: id, isActive: isActive)
-        }
-    }
-
-    func presentOAuthProxyEditor(id: UUID) {
-        guard let profile = snapshot.oauthProfiles.first(where: { $0.id == id }) else { return }
-        proxyEditPromptState = ProxyEditPromptState(
-            target: .oauth(id),
-            title: "OAuth Proxy",
-            subtitle: profile.displayName,
-            proxyURL: profile.proxyURL ?? ""
-        )
-    }
-
-    func saveOAuthProxy() async {
-        guard let prompt = proxyEditPromptState else { return }
-        guard case .oauth(let id) = prompt.target else { return }
-        let proxyURL = prompt.proxyURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        proxyEditPromptState = nil
-        await performMutation { [self] in
-            try await self.service.setOAuthProxy(id: id, proxyURL: proxyURL.isEmpty ? nil : proxyURL)
         }
     }
 
@@ -323,6 +308,28 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    func saveGlobalSettings() async {
+        globalSettingsValidation = validate(globalSettingsDraft)
+        guard !globalSettingsValidation.hasAnyError else { return }
+
+        await performMutation { [self] in
+            try await self.service.updateGlobalSettings(self.globalSettingsDraft)
+        }
+    }
+
+    func requestResetGlobalSettings() {
+        isResetSettingsConfirmationPresented = true
+    }
+
+    func resetGlobalSettingsToDefaults() {
+        globalSettingsDraft = GlobalSettingsDraft(
+            globalProxyURL: "",
+            port: "8787",
+            authDirectory: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cli-proxy-api", isDirectory: true).path
+        )
+        globalSettingsValidation = GlobalSettingsValidation()
+    }
+
     func clearProviderValidation() {
         providerDraftValidation = ProviderDraftValidation()
     }
@@ -405,6 +412,7 @@ final class AppViewModel: ObservableObject {
             snapshot = try await operation()
             pendingProviderSelectedModels = [:]
             syncProviderNameDrafts()
+            syncGlobalSettingsDraft()
             lastErrorMessage = nil
         } catch {
             lastErrorMessage = error.localizedDescription
@@ -413,6 +421,15 @@ final class AppViewModel: ObservableObject {
 
     private func syncProviderNameDrafts() {
         providerNameDrafts = Dictionary(uniqueKeysWithValues: snapshot.providers.map { ($0.stableKey, $0.name) })
+    }
+
+    private func syncGlobalSettingsDraft() {
+        globalSettingsDraft = GlobalSettingsDraft(
+            globalProxyURL: snapshot.globalProxyURL ?? "",
+            port: String(snapshot.activePort),
+            authDirectory: snapshot.oauthDirectory
+        )
+        globalSettingsValidation = GlobalSettingsValidation()
     }
 
     private func validate(_ draft: ProviderDraft) -> ProviderDraftValidation {
@@ -440,6 +457,30 @@ final class AppViewModel: ObservableObject {
         }
         if trimmedModelAlias.isEmpty {
             validation.modelAlias = "Model alias is required."
+        }
+
+        return validation
+    }
+
+    private func validate(_ draft: GlobalSettingsDraft) -> GlobalSettingsValidation {
+        let trimmedProxyURL = draft.globalProxyURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedPort = draft.port.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedAuthDirectory = draft.authDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        var validation = GlobalSettingsValidation()
+
+        if !trimmedProxyURL.isEmpty, trimmedProxyURL != "direct", trimmedProxyURL != "none", URL(string: trimmedProxyURL) == nil {
+            validation.globalProxyURL = "Enter a valid proxy URL, or use direct/none."
+        }
+        if let port = Int(trimmedPort) {
+            if !(1...65535).contains(port) {
+                validation.port = "Port must be between 1 and 65535."
+            }
+        } else {
+            validation.port = "Port must be a number."
+        }
+        if trimmedAuthDirectory.isEmpty {
+            validation.authDirectory = "Auth directory is required."
         }
 
         return validation

@@ -18,17 +18,16 @@ The product boundary is:
   - inspect upstream capabilities and API contracts
   - optionally build local runtime binaries during development
   - track management endpoints and config behavior
+- You must check CLIProxyAPIPlus's source code to identify its capability and implementation, and interact with it correctly in this app
 
 Important upstream APIs currently used by SurProxy:
 
 - `/v0/management/config`
 - `/v0/management/config.yaml`
 - `/v0/management/latest-version`
-- `/v0/management/proxy-url`
 - `/v0/management/auth-files`
 - `/v0/management/auth-files/models`
 - `/v0/management/auth-files/status`
-- `/v0/management/auth-files/fields`
 - `/v0/management/api-keys`
 - `/v0/management/model-definitions/:channel`
 - `/v0/management/gemini-api-key`
@@ -99,12 +98,25 @@ Important upstream APIs currently used by SurProxy:
   - `proxy_url`
 - Fallback source: direct scan of `~/.cli-proxy-api/*.json` when management API returns an empty list or parsing yields no usable auth entries
 - This fallback exists because empty UI state is worse than partial local visibility when the runtime API shape drifts or returns incomplete data
-- OAuth cards can patch per-auth proxy overrides through upstream `PATCH /v0/management/auth-files/fields` using the real `proxy_url` field name
 - For model lists under each OAuth card:
   - primary source: `GET /v0/management/auth-files/models?name=...`
   - secondary source: dynamic probing of `GET /v0/management/model-definitions/:channel`
   - channel probing is derived from auth-provided identifiers such as `provider`, `type`, `id`, `account_type`, filename, and email prefix
   - do not reintroduce a hardcoded provider-to-channel mapping table unless upstream makes dynamic resolution impossible and the user explicitly approves that tradeoff
+
+### Current global settings behavior
+
+- OAuth proxy behavior should follow upstream global config semantics rather than a SurProxy-invented per-auth override model
+- SurProxy now exposes a dedicated `Settings` sidebar section for SurProxy-managed global runtime values:
+  - global `proxy-url`
+  - `port`
+  - `auth-dir`
+- Provider proxy overrides remain valid and continue to be edited per provider card
+- Saving only a global proxy change should prefer upstream config hot reload through `PUT /v0/management/config.yaml`
+- Saving a port or auth-dir change still requires a runtime restart because upstream binds the HTTP listener at startup and the watcher does not fully retarget auth-dir file watching in-place
+- Restart paths should reuse the same stop/start sequencing expectations as the normal runtime controls:
+  - do not assume the process is stopped immediately after sending termination
+  - wait for the old process to exit before starting the new one
 
 ### Packaged runtime
 
@@ -237,7 +249,8 @@ Current UI sections:
 - OAuth file list
 - provider routing summary
 - API Key management for downstream callers
-- left sidebar category navigation: `Status`, `OAuth`, `Provider`
+- global runtime settings
+- left sidebar category navigation: `Status`, `OAuth`, `Provider`, `API Keys`, `Settings`
 
 Current actions exposed:
 
@@ -257,10 +270,11 @@ Current actions exposed:
 - Login Kiro
 - Login GitHub Copilot
 - toggle auth file active/inactive
-- set or clear a per-OAuth proxy override
 - add provider entries through upstream `config.yaml` management
 - set or clear a per-provider proxy override
 - add, copy, and delete downstream API keys through upstream `/v0/management/api-keys`
+- edit global proxy, port, and auth-dir from the Settings page
+- reset Settings page values back to SurProxy defaults with confirmation
 
 Current display behavior:
 
@@ -269,7 +283,6 @@ Current display behavior:
 - each OAuth card can show copyable model IDs from upstream
 - OAuth cards are rendered in an adaptive multi-column grid based on available window width
 - model lists use a collapsed disclosure style by default to reduce vertical space
-- OAuth cards expose a proxy icon button whose tint changes when a per-auth proxy override is configured
 - provider cards are also rendered in an adaptive grid
 - provider model lists are loaded lazily when a provider disclosure group is expanded
 - provider model toggles render from the provider's selected model set, not from a stale per-row cache bit
@@ -286,6 +299,8 @@ Current display behavior:
 - provider cards expose a proxy icon button whose tint changes when a per-provider proxy override is configured
 - the main toolbar has a force-refresh button in the top-right that reloads the latest management snapshot into the UI under the global loading overlay
 - API Keys are managed as a plain upstream string list; when appending a key through `PATCH /v0/management/api-keys`, the request must include both `old` and `new` because upstream rejects a payload that only includes `new`
+- the Settings page explicitly explains that global proxy, port, and auth-dir affect all OAuth flows together rather than one OAuth card at a time
+- restoring defaults in Settings only resets the form values until the user confirms and then clicks save; it does not silently rewrite the runtime config
 
 ### Provider mutation details
 
@@ -322,6 +337,9 @@ If sandboxing is reconsidered later, the product architecture will need to chang
 - Provider routing UI is still a lightweight summary mapped from management config, not a full native config editor.
 - Provider routing toggles are intentionally not persisted yet; pretending they work would be incorrect.
 - `Reload Config` currently means: rewrite SurProxy-managed config if needed and refresh management snapshot. It is not a dedicated upstream reload API integration.
+- global settings save behavior is split:
+  - `proxy-url` should hot reload through upstream config handling without a full restart
+  - `port` and `auth-dir` still require a restart
 - menu bar interaction is currently implemented with SwiftUI `MenuBarExtra`; if layout-recursion behavior resurfaces, the next escalation path is a lower-level `NSStatusItem` + `NSMenu` implementation
 
 ## Build and Packaging Workflow

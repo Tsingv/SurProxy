@@ -12,6 +12,7 @@ private enum SidebarSection: String, CaseIterable, Identifiable, Hashable {
     case oauth
     case providers
     case apiKeys
+    case settings
 
     var id: String { rawValue }
 
@@ -25,6 +26,8 @@ private enum SidebarSection: String, CaseIterable, Identifiable, Hashable {
             return "Provider"
         case .apiKeys:
             return "API Keys"
+        case .settings:
+            return "Settings"
         }
     }
 
@@ -38,6 +41,8 @@ private enum SidebarSection: String, CaseIterable, Identifiable, Hashable {
             return "point.3.connected.trianglepath.dotted"
         case .apiKeys:
             return "key.horizontal"
+        case .settings:
+            return "gearshape"
         }
     }
 }
@@ -70,6 +75,8 @@ struct ContentView: View {
                             providerCard
                         case .apiKeys:
                             apiKeysCard
+                        case .settings:
+                            settingsCard
                         }
                     }
                     .padding(24)
@@ -114,6 +121,14 @@ struct ContentView: View {
                     viewModel.pendingDeletionConfirmation = nil
                 }
             )
+        }
+        .alert("Restore Default Settings?", isPresented: $viewModel.isResetSettingsConfirmationPresented) {
+            Button("Restore Defaults", role: .destructive) {
+                viewModel.resetGlobalSettingsToDefaults()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This only resets the values in the Settings form to SurProxy defaults. Use Save Settings to apply them to the runtime.")
         }
         .sheet(item: $viewModel.oauthPromptState) { prompt in
             oauthPromptSheet(prompt)
@@ -443,15 +458,6 @@ struct ContentView: View {
                 }
                 .buttonStyle(.borderless)
                 .disabled(viewModel.isLoading)
-
-                Button {
-                    viewModel.presentOAuthProxyEditor(id: profile.id)
-                } label: {
-                    proxyButtonIcon(isConfigured: isProxyConfigured(profile.proxyURL))
-                }
-                .buttonStyle(.borderless)
-                .help(profileProxyHelpText(profile.proxyURL))
-                .disabled(viewModel.isLoading)
             }
 
             if !profile.models.isEmpty {
@@ -668,6 +674,60 @@ struct ContentView: View {
                             Divider()
                         }
                     }
+                }
+            }
+        }
+    }
+
+    private var settingsCard: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Global Settings")
+                    .font(.title3.weight(.semibold))
+
+                Text("These values are global CLIProxyAPIPlus runtime settings. They affect all OAuth login flows and all OAuth auth files together, not one OAuth card at a time. Provider cards still support their own per-provider proxy overrides.")
+                    .foregroundStyle(.secondary)
+
+                TextField("Global Proxy URL", text: $viewModel.globalSettingsDraft.globalProxyURL)
+                    .textFieldStyle(.roundedBorder)
+                if let message = viewModel.globalSettingsValidation.globalProxyURL {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+
+                TextField("Port", text: $viewModel.globalSettingsDraft.port)
+                    .textFieldStyle(.roundedBorder)
+                if let message = viewModel.globalSettingsValidation.port {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+
+                TextField("Auth Directory", text: $viewModel.globalSettingsDraft.authDirectory)
+                    .textFieldStyle(.roundedBorder)
+                if let message = viewModel.globalSettingsValidation.authDirectory {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+
+                Text("Saving updates the SurProxy-managed runtime config. If the local runtime is running, SurProxy restarts it so the new port, proxy, and auth directory take effect.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                HStack(spacing: 12) {
+                    Button("Restore Defaults") {
+                        viewModel.requestResetGlobalSettings()
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(viewModel.isLoading)
+
+                    Button("Save Settings") {
+                        Task { await viewModel.saveGlobalSettings() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(viewModel.isLoading)
                 }
             }
         }
@@ -928,8 +988,6 @@ struct ContentView: View {
                     Button("Save") {
                         Task {
                             switch prompt.target {
-                            case .oauth:
-                                await viewModel.saveOAuthProxy()
                             case .provider:
                                 await viewModel.saveProviderProxy()
                             }
@@ -948,13 +1006,6 @@ struct ContentView: View {
 
     private func isProxyConfigured(_ proxyURL: String?) -> Bool {
         !(proxyURL?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
-    }
-
-    private func profileProxyHelpText(_ proxyURL: String?) -> String {
-        if let proxyURL, isProxyConfigured(proxyURL) {
-            return "Edit OAuth proxy override: \(proxyURL)"
-        }
-        return "Set OAuth proxy override"
     }
 
     private func providerProxyHelpText(_ proxyURL: String?) -> String {

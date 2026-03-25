@@ -51,6 +51,7 @@ The repository now contains a working native macOS host for `CLIProxyAPIPlus` wi
 - dashboard sections for runtime state, packaged runtime binary, OAuth login, OAuth file list, and provider routing summary
 - a dedicated API Keys section for downstream caller credentials managed by `CLIProxyAPIPlus`
 - OAuth cards that can show upstream model IDs and copy them directly from the native UI
+- a dedicated Settings section for SurProxy-managed global runtime values such as proxy, port, and auth directory
 
 Current runtime layout:
 
@@ -67,7 +68,9 @@ Important behavior:
 - The main toolbar now includes a top-right force-refresh button that reloads the latest management snapshot under the global loading overlay.
 - For auth files, SurProxy now parses the real `CLIProxyAPIPlus` `GET /v0/management/auth-files` response shape based on upstream source.
 - If the management API returns an empty auth list or the response cannot be interpreted, SurProxy falls back to scanning `~/.cli-proxy-api/*.json` directly so the UI does not collapse to an empty state.
-- OAuth cards can set or clear a per-auth proxy override using the upstream auth-file field patch path; the proxy icon turns blue when an override is present.
+- OAuth proxy behavior is now treated as a global runtime setting rather than a per-auth override.
+- The Settings page controls global `proxy-url`, `port`, and `auth-dir` values for the SurProxy-managed runtime config.
+- Provider cards still expose per-provider proxy overrides and continue to use upstream provider config semantics.
 - SurProxy preserves existing provider configuration in its app-managed `config.yaml` and only upserts the runtime fields it must own.
 - SurProxy health checks now avoid sending `GET /v0/management/config` before `127.0.0.1:8787` is actually listening, which prevents noisy early `NSURLErrorDomain Code=-1004` failures during startup.
 - For models, SurProxy first uses `GET /v0/management/auth-files/models?name=...` and then does a dynamic channel probe against `GET /v0/management/model-definitions/:channel` using auth-provided identifiers rather than a hardcoded provider-to-channel table.
@@ -79,19 +82,22 @@ Important behavior:
 - Saving provider model changes now writes back upstream configuration and then immediately rereads provider state from management APIs so the UI reflects the real saved state.
 - Provider model save strategy currently uses per-entry `PATCH` for `openai-compatibility`, `claude-api-key`, `codex-api-key`, and `vertex-api-key`; `gemini-api-key` still uses grouped `PUT` because upstream patch support for `models` is not available there.
 - Provider cards can now set or clear per-provider proxy overrides from a proxy icon. For `gemini-api-key`, `claude-api-key`, `codex-api-key`, and `vertex-api-key`, SurProxy patches the entry `proxy-url`. For `openai-compatibility`, SurProxy updates `api-key-entries[].proxy-url` because that is where upstream stores the effective override.
+- Global settings saves now follow upstream config behavior more closely:
+  - changing only `proxy-url` uses upstream config hot reload via `PUT /v0/management/config.yaml`
+  - changing `port` or `auth-dir` still requires a runtime restart
+  - restart waits for the old runtime process to exit before launching the replacement process
 - The UI shows a global loading overlay during management API mutations so users do not continue interacting with stale state while writes are in flight.
 - After provider model saves finish, SurProxy now shows a short-lived floating notice instead of a persistent message because upstream state can still take a few seconds to settle; users can re-expand the model list to force a refresh.
+- The Settings page also supports restoring default form values with confirmation before the user applies them.
 
 ## Upstream APIs In Active Use
 
 - `/v0/management/config`
 - `/v0/management/config.yaml`
 - `/v0/management/latest-version`
-- `/v0/management/proxy-url`
 - `/v0/management/auth-files`
 - `/v0/management/auth-files/models`
 - `/v0/management/auth-files/status`
-- `/v0/management/auth-files/fields`
 - `/v0/management/api-keys`
 - `/v0/management/model-definitions/:channel`
 - `/v0/management/gemini-api-key`

@@ -11,7 +11,6 @@ protocol ProxyServicing {
     func loadSnapshot() async throws -> ProxyStatusSnapshot
     func setRuntimeState(_ state: ProxyRuntimeState) async throws -> ProxyStatusSnapshot
     func setOAuthProfile(id: UUID, isActive: Bool) async throws -> ProxyStatusSnapshot
-    func setOAuthProxy(id: UUID, proxyURL: String?) async throws -> ProxyStatusSnapshot
     func deleteOAuthProfile(id: UUID) async throws -> ProxyStatusSnapshot
     func setProvider(id: String, isEnabled: Bool) async throws -> ProxyStatusSnapshot
     func setProviderModel(providerID: String, modelID: String, isEnabled: Bool) async throws -> ProxyStatusSnapshot
@@ -25,6 +24,7 @@ protocol ProxyServicing {
     func deleteAPIKey(_ value: String) async throws -> ProxyStatusSnapshot
     func reloadConfiguration() async throws -> ProxyStatusSnapshot
     func reinstallBundledRuntime() async throws -> ProxyStatusSnapshot
+    func updateGlobalSettings(_ draft: GlobalSettingsDraft) async throws -> ProxyStatusSnapshot
     func startOAuthLogin(provider: OAuthLoginProvider, options: OAuthLoginRequestOptions) async throws -> OAuthLoginSession
     func pollOAuthLogin(state: String) async throws -> ProxyStatusSnapshot
     func shutdown()
@@ -93,6 +93,7 @@ final class ProxyService: ProxyServicing {
             try await waitForManagementReady()
         case .stopping, .stopped:
             runtimeManager.stop()
+            try await waitForRuntimeStopped()
         case .degraded:
             break
         }
@@ -123,23 +124,6 @@ final class ProxyService: ProxyServicing {
             baseURL: managementBaseURL(),
             key: manifest.managementKey,
             name: profile.fileName
-        )
-        return try await refreshSnapshot()
-    }
-
-    func setOAuthProxy(id: UUID, proxyURL: String?) async throws -> ProxyStatusSnapshot {
-        try prepareRuntime()
-        try await ensureManagementReady()
-        guard let profile = snapshot.oauthProfiles.first(where: { $0.id == id }) else {
-            return snapshot
-        }
-
-        let trimmedProxyURL = proxyURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        try await apiClient.patchAuthFileFields(
-            baseURL: managementBaseURL(),
-            key: manifest.managementKey,
-            name: profile.fileName,
-            fields: ["proxy_url": trimmedProxyURL]
         )
         return try await refreshSnapshot()
     }
@@ -470,6 +454,66 @@ final class ProxyService: ProxyServicing {
         return try await refreshSnapshot()
     }
 
+    func updateGlobalSettings(_ draft: GlobalSettingsDraft) async throws -> ProxyStatusSnapshot {
+        let trimmedProxyURL = draft.globalProxyURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedAuthDirectory = draft.authDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let port = Int(draft.port.trimmingCharacters(in: .whitespacesAndNewlines)), (1...65535).contains(port) else {
+            throw NSError(domain: "SurProxy.Settings", code: 1, userInfo: [NSLocalizedDescriptionKey: "Port must be a number between 1 and 65535."])
+        }
+        guard !trimmedAuthDirectory.isEmpty else {
+            throw NSError(domain: "SurProxy.Settings", code: 2, userInfo: [NSLocalizedDescriptionKey: "Auth directory cannot be empty."])
+        }
+
+        var nextManifest = manifest
+        nextManifest.port = port
+        nextManifest.authDirectoryPath = Self.expandedPath(trimmedAuthDirectory, fileManager: fileManager)
+        let portChanged = nextManifest.port != manifest.port
+        let authDirectoryChanged = nextManifest.authDirectoryPath != manifest.authDirectoryPath
+        let requiresRestart = portChanged || authDirectoryChanged
+
+        _ = try runtimeManager.prepareRuntime(paths: paths, manifest: nextManifest)
+
+        let existingYAML = (try? String(contentsOf: paths.configFile, encoding: .utf8)) ?? ""
+        var updatedYAML = Self.updatingManagedConfig(
+            existingYAML,
+            authDirectory: nextManifest.authDirectoryPath,
+            port: nextManifest.port,
+            managementKey: nextManifest.managementKey
+        )
+        updatedYAML = Self.upsertTopLevelScalar(
+            key: "proxy-url",
+            value: trimmedProxyURL.isEmpty ? "\"\"" : "'\(Self.escapeYAML(trimmedProxyURL))'",
+            in: updatedYAML
+        )
+
+        let baseURL = managementBaseURL()
+        let managementReachable = await apiClient.healthCheck(baseURL: baseURL, key: manifest.managementKey)
+
+        if managementReachable {
+            try await apiClient.putConfigYAML(
+                baseURL: baseURL,
+                key: manifest.managementKey,
+                yaml: updatedYAML
+            )
+        } else {
+            try updatedYAML.write(to: paths.configFile, atomically: true, encoding: .utf8)
+        }
+
+        manifest = nextManifest
+        try runtimeManager.writeManifest(manifest, to: paths.manifestFile)
+
+        if requiresRestart && runtimeManager.isRunning {
+            runtimeManager.stop()
+            try await waitForRuntimeStopped()
+            try runtimeManager.start(paths: paths)
+            try await waitForManagementReady()
+        } else if managementReachable {
+            try await Task.sleep(for: .milliseconds(300))
+        }
+
+        return try await refreshSnapshot()
+    }
+
     func startOAuthLogin(provider: OAuthLoginProvider, options: OAuthLoginRequestOptions) async throws -> OAuthLoginSession {
         try prepareRuntime()
         if !runtimeManager.isRunning {
@@ -627,6 +671,19 @@ final class ProxyService: ProxyServicing {
         throw RuntimeManagerError.runtimeExited("CLIProxyAPIPlus is not running.\(exitDetails) Recent runtime log:\n\(runtimeManager.recentLog)")
     }
 
+    private func waitForRuntimeStopped() async throws {
+        let deadline = Date().addingTimeInterval(8)
+
+        while Date() < deadline {
+            if !runtimeManager.isRunning {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(150))
+        }
+
+        throw RuntimeManagerError.runtimeExited("CLIProxyAPIPlus did not stop in time. Recent runtime log:\n\(runtimeManager.recentLog)")
+    }
+
     private func refreshSnapshot() async throws -> ProxyStatusSnapshot {
         var next = ProxyService.bootstrapSnapshot(paths: paths, manifest: manifest)
         next.binary.latestVersion = snapshot.binary.latestVersion
@@ -654,17 +711,21 @@ final class ProxyService: ProxyServicing {
             if let authFiles = try? await apiClient.authFiles(baseURL: baseURL, key: manifest.managementKey), !authFiles.isEmpty {
                 next.oauthProfiles = try await enrichAuthProfiles(authFiles, baseURL: baseURL)
             } else {
-                next.oauthProfiles = Self.loadAuthFilesFromDisk(at: paths.authDirectory, fileManager: fileManager)
+                next.oauthProfiles = Self.loadAuthFilesFromDisk(at: authDirectoryURL(), fileManager: fileManager)
             }
             let configObject = try? await apiClient.getConfig(baseURL: baseURL, key: manifest.managementKey)
             let configYAML = try? await apiClient.getConfigYAML(baseURL: baseURL, key: manifest.managementKey)
             next.providers = await enrichProviders(baseURL: baseURL, configObject: configObject, configYAML: configYAML)
+            next.globalProxyURL = Self.trimmed(configObject?["proxy-url"] as? String)
             if next.providers.isEmpty, let configYAML {
                 next.providers = Self.mapProviders(fromYAML: configYAML)
             }
         } else {
             next.managementAPIDisabled = false
-            next.oauthProfiles = Self.loadAuthFilesFromDisk(at: paths.authDirectory, fileManager: fileManager)
+            next.oauthProfiles = Self.loadAuthFilesFromDisk(at: authDirectoryURL(), fileManager: fileManager)
+            if let yaml = try? String(contentsOf: paths.configFile, encoding: .utf8) {
+                next.globalProxyURL = Self.topLevelScalarValue(for: "proxy-url", in: yaml)
+            }
         }
 
         snapshot = next
@@ -673,6 +734,10 @@ final class ProxyService: ProxyServicing {
 
     private func managementBaseURL() -> URL {
         URL(string: "http://127.0.0.1:\(manifest.port)/\(managementBasePath)/")!
+    }
+
+    private func authDirectoryURL() -> URL {
+        URL(fileURLWithPath: manifest.authDirectoryPath, isDirectory: true)
     }
 
     private func enrichAuthProfiles(_ authFiles: [ManagementAuthFile], baseURL: URL) async throws -> [OAuthProfile] {
@@ -822,7 +887,7 @@ final class ProxyService: ProxyServicing {
         snapshot.endpoint = "http://127.0.0.1:\(manifest.port)"
         snapshot.activePort = manifest.port
         snapshot.configPath = paths.configFile.path
-        snapshot.oauthDirectory = paths.authDirectory.path
+        snapshot.oauthDirectory = manifest.authDirectoryPath
         snapshot.binary.currentVersion = manifest.activeVersion
         snapshot.binary.source = manifest.source
         snapshot.binary.bundledBinaryPath = paths.bundledBinary?.path ?? "Missing bundled runtime"
@@ -893,7 +958,6 @@ final class ProxyService: ProxyServicing {
             email: email,
             account: account,
             note: trimmed(file.note),
-            proxyURL: trimmed(file.proxyURL) ?? trimmed(file.fields?["proxy_url"]) ?? trimmed(file.fields?["proxy-url"]),
             models: []
         )
     }
@@ -1160,6 +1224,92 @@ final class ProxyService: ProxyServicing {
 
     nonisolated private static func escapeYAML(_ value: String) -> String {
         value.replacingOccurrences(of: "'", with: "''")
+    }
+
+    nonisolated private static func expandedPath(_ rawPath: String, fileManager: FileManager) -> String {
+        if rawPath == "~" {
+            return fileManager.homeDirectoryForCurrentUser.path
+        }
+        if rawPath.hasPrefix("~/") {
+            return fileManager.homeDirectoryForCurrentUser.appendingPathComponent(String(rawPath.dropFirst(2)), isDirectory: true).path
+        }
+        return URL(fileURLWithPath: rawPath).standardizedFileURL.path
+    }
+
+    nonisolated private static func updatingManagedConfig(_ yaml: String, authDirectory: String, port: Int, managementKey: String) -> String {
+        var result = yaml
+        result = upsertTopLevelScalar(key: "host", value: "'127.0.0.1'", in: result)
+        result = upsertTopLevelScalar(key: "port", value: "\(port)", in: result)
+        result = upsertTopLevelScalar(key: "auth-dir", value: "'\(escapeYAML(authDirectory))'", in: result)
+        result = upsertTopLevelScalar(key: "debug", value: "false", in: result)
+        result = upsertTopLevelScalar(key: "logging-to-file", value: "true", in: result)
+        result = upsertTopLevelScalar(key: "usage-statistics-enabled", value: "true", in: result)
+        result = upsertTopLevelScalar(key: "incognito-browser", value: "true", in: result)
+        result = upsertRemoteManagementBlock(in: result, managementKey: managementKey)
+        if !result.hasSuffix("\n") {
+            result.append("\n")
+        }
+        return result
+    }
+
+    nonisolated private static func upsertTopLevelScalar(key: String, value: String, in yaml: String) -> String {
+        var lines = yaml.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let prefix = "\(key):"
+        if let index = lines.firstIndex(where: { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            return !line.hasPrefix(" ") && trimmed.hasPrefix(prefix)
+        }) {
+            lines[index] = "\(key): \(value)"
+        } else {
+            if !lines.isEmpty, !lines.last!.isEmpty {
+                lines.append("")
+            }
+            lines.append("\(key): \(value)")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    nonisolated private static func upsertRemoteManagementBlock(in yaml: String, managementKey: String) -> String {
+        var lines = yaml.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let block = [
+            "remote-management:",
+            "  allow-remote: false",
+            "  secret-key: '\(escapeYAML(managementKey))'",
+            "  disable-control-panel: true"
+        ]
+
+        if let index = lines.firstIndex(where: {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("remote-management:")
+        }) {
+            var endIndex = index + 1
+            while endIndex < lines.count {
+                let line = lines[endIndex]
+                if !line.isEmpty && !line.hasPrefix(" ") && !line.hasPrefix("\t") {
+                    break
+                }
+                endIndex += 1
+            }
+            lines.replaceSubrange(index..<endIndex, with: block)
+        } else {
+            if !lines.isEmpty, !lines.last!.isEmpty {
+                lines.append("")
+            }
+            lines.append(contentsOf: block)
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    nonisolated private static func topLevelScalarValue(for key: String, in yaml: String) -> String? {
+        let prefix = "\(key):"
+        for line in yaml.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !line.hasPrefix(" "), trimmed.hasPrefix(prefix) else { continue }
+            let rawValue = trimmed.dropFirst(prefix.count).trimmingCharacters(in: .whitespacesAndNewlines)
+            let unquoted = rawValue.trimmingCharacters(in: CharacterSet(charactersIn: "'\""))
+            return unquoted.isEmpty ? nil : unquoted
+        }
+        return nil
     }
 
     nonisolated private static func loadAuthFilesFromDisk(at directory: URL, fileManager: FileManager) -> [OAuthProfile] {

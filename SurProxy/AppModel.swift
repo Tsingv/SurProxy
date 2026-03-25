@@ -44,7 +44,6 @@ struct OAuthProfile: Identifiable, Hashable {
     var email: String?
     var account: String?
     var note: String?
-    var proxyURL: String?
     var models: [AvailableModel]
 }
 
@@ -248,13 +247,10 @@ struct ProviderRoute: Identifiable, Hashable {
 }
 
 enum ProxyTarget: Identifiable, Hashable {
-    case oauth(UUID)
     case provider(String)
 
     var id: String {
         switch self {
-        case .oauth(let id):
-            return "oauth:\(id.uuidString)"
         case .provider(let stableKey):
             return "provider:\(stableKey)"
         }
@@ -396,6 +392,22 @@ struct APIKeyEntry: Identifiable, Hashable {
     var value: String
 }
 
+struct GlobalSettingsDraft {
+    var globalProxyURL: String = ""
+    var port: String = "8787"
+    var authDirectory: String = ""
+}
+
+struct GlobalSettingsValidation {
+    var globalProxyURL: String?
+    var port: String?
+    var authDirectory: String?
+
+    var hasAnyError: Bool {
+        globalProxyURL != nil || port != nil || authDirectory != nil
+    }
+}
+
 struct PendingOAuthDeletion: Identifiable {
     let id: UUID
     let profileID: UUID
@@ -487,6 +499,7 @@ struct ProxyStatusSnapshot {
     var activePort: Int
     var configPath: String
     var oauthDirectory: String
+    var globalProxyURL: String?
     var binary: RuntimeBinaryStatus
     var managementBaseURL: String
     var managementAPIDisabled: Bool
@@ -503,6 +516,7 @@ struct ProxyStatusSnapshot {
             activePort: 8787,
             configPath: "~/.cli-proxy-api/config.yaml",
             oauthDirectory: "~/.cli-proxy-api",
+            globalProxyURL: nil,
             binary: RuntimeBinaryStatus(
                 currentVersion: "bundled-dev",
                 latestVersion: nil,
