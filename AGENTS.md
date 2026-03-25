@@ -57,6 +57,7 @@ Important upstream APIs currently used by SurProxy:
 - Main UI: `SurProxy/ContentView.swift`
 - View model: `SurProxy/AppViewModel.swift`
 - Service boundary: `SurProxy/ProxyService.swift`
+- Brand and product documentation: `Docs/`
 
 ### Runtime coordination
 
@@ -301,6 +302,11 @@ Current display behavior:
 - API Keys are managed as a plain upstream string list; when appending a key through `PATCH /v0/management/api-keys`, the request must include both `old` and `new` because upstream rejects a payload that only includes `new`
 - the Settings page explicitly explains that global proxy, port, and auth-dir affect all OAuth flows together rather than one OAuth card at a time
 - restoring defaults in Settings only resets the form values until the user confirms and then clicks save; it does not silently rewrite the runtime config
+- the app now ships custom brand assets:
+  - `SurProxy/Assets.xcassets/AppIcon.appiconset`
+  - `SurProxy/Assets.xcassets/TrayIcon.imageset`
+  - vector sources and notes under `Docs/Brand/`
+- the current brand accent color is `#339966`; if icon backgrounds or accent color change, update both the asset catalog and the retained SVG sources
 
 ### Provider mutation details
 

@@ -43,8 +43,10 @@ struct SurProxyApp: App {
         }
         .defaultSize(width: 1180, height: 760)
 
-        MenuBarExtra("SurProxy", systemImage: "bolt.horizontal.circle") {
+        MenuBarExtra {
             TrayMenuContent(viewModel: viewModel)
+        } label: {
+            Label("SurProxy", image: "TrayIcon")
         }
     }
 }
