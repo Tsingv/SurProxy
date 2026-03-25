@@ -44,6 +44,7 @@ struct OAuthProfile: Identifiable, Hashable {
     var email: String?
     var account: String?
     var note: String?
+    var proxyURL: String?
     var models: [AvailableModel]
 }
 
@@ -241,8 +242,32 @@ struct ProviderRoute: Identifiable, Hashable {
     var canRename: Bool
     var configKey: String
     var entryIndex: Int
+    var proxyURL: String?
     var selectedModels: Set<String>
     var models: [ProviderModel]
+}
+
+enum ProxyTarget: Identifiable, Hashable {
+    case oauth(UUID)
+    case provider(String)
+
+    var id: String {
+        switch self {
+        case .oauth(let id):
+            return "oauth:\(id.uuidString)"
+        case .provider(let stableKey):
+            return "provider:\(stableKey)"
+        }
+    }
+}
+
+struct ProxyEditPromptState: Identifiable {
+    let target: ProxyTarget
+    let title: String
+    let subtitle: String
+    var proxyURL: String
+
+    var id: String { target.id }
 }
 
 struct ProviderModel: Identifiable, Hashable {

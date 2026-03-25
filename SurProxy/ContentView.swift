@@ -118,6 +118,20 @@ struct ContentView: View {
         .sheet(item: $viewModel.oauthPromptState) { prompt in
             oauthPromptSheet(prompt)
         }
+        .sheet(item: $viewModel.proxyEditPromptState) { prompt in
+            proxyEditSheet(prompt)
+        }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    Task { await viewModel.refresh() }
+                } label: {
+                    Label("Force Refresh", systemImage: "arrow.clockwise")
+                }
+                .help("Force refresh the latest state from the management API")
+                .disabled(viewModel.isLoading)
+            }
+        }
     }
 
     private var runtimeCard: some View {
@@ -429,6 +443,15 @@ struct ContentView: View {
                 }
                 .buttonStyle(.borderless)
                 .disabled(viewModel.isLoading)
+
+                Button {
+                    viewModel.presentOAuthProxyEditor(id: profile.id)
+                } label: {
+                    proxyButtonIcon(isConfigured: isProxyConfigured(profile.proxyURL))
+                }
+                .buttonStyle(.borderless)
+                .help(profileProxyHelpText(profile.proxyURL))
+                .disabled(viewModel.isLoading)
             }
 
             if !profile.models.isEmpty {
@@ -712,6 +735,15 @@ struct ContentView: View {
                             .foregroundStyle(.secondary)
                     }
 
+                    Button {
+                        viewModel.presentProviderProxyEditor(stableKey: provider.stableKey)
+                    } label: {
+                        proxyButtonIcon(isConfigured: isProxyConfigured(provider.proxyURL))
+                    }
+                    .buttonStyle(.borderless)
+                    .help(providerProxyHelpText(provider.proxyURL))
+                    .disabled(viewModel.isLoading)
+
                     Button(role: .destructive) {
                         viewModel.confirmDeleteProvider(stableKey: provider.stableKey)
                     } label: {
@@ -859,5 +891,76 @@ struct ContentView: View {
         case .running, .stopped, .degraded:
             return false
         }
+    }
+
+    @ViewBuilder
+    private func proxyEditSheet(_ prompt: ProxyEditPromptState) -> some View {
+        NavigationStack {
+            Form {
+                Section(prompt.title) {
+                    Text(prompt.subtitle)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+
+                    TextField(
+                        "Proxy URL or direct/none",
+                        text: Binding(
+                            get: { viewModel.proxyEditPromptState?.proxyURL ?? prompt.proxyURL },
+                            set: { viewModel.proxyEditPromptState?.proxyURL = $0 }
+                        )
+                    )
+                    .textFieldStyle(.roundedBorder)
+
+                    Text("Supports `http://`, `https://`, `socks5://`, and upstream special values like `direct` or `none`. Leave empty to clear the override.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .formStyle(.grouped)
+            .navigationTitle(prompt.title)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        viewModel.proxyEditPromptState = nil
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        Task {
+                            switch prompt.target {
+                            case .oauth:
+                                await viewModel.saveOAuthProxy()
+                            case .provider:
+                                await viewModel.saveProviderProxy()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .frame(minWidth: 420, minHeight: 220)
+    }
+
+    private func proxyButtonIcon(isConfigured: Bool) -> some View {
+        Image(systemName: "network")
+            .foregroundStyle(isConfigured ? Color.blue : Color.secondary)
+    }
+
+    private func isProxyConfigured(_ proxyURL: String?) -> Bool {
+        !(proxyURL?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+    }
+
+    private func profileProxyHelpText(_ proxyURL: String?) -> String {
+        if let proxyURL, isProxyConfigured(proxyURL) {
+            return "Edit OAuth proxy override: \(proxyURL)"
+        }
+        return "Set OAuth proxy override"
+    }
+
+    private func providerProxyHelpText(_ proxyURL: String?) -> String {
+        if let proxyURL, isProxyConfigured(proxyURL) {
+            return "Edit provider proxy override: \(proxyURL)"
+        }
+        return "Set provider proxy override"
     }
 }

@@ -20,6 +20,7 @@ final class AppViewModel: ObservableObject {
     @Published var providerDraftValidation = ProviderDraftValidation()
     @Published var apiKeyDraft = ""
     @Published var oauthPromptState: OAuthLoginPromptState?
+    @Published var proxyEditPromptState: ProxyEditPromptState?
     @Published var pendingProviderSelectedModels: [String: Set<String>] = [:]
     @Published var providerModelLoadingKeys: Set<String> = []
     @Published var providerNameDrafts: [String: String] = [:]
@@ -159,6 +160,26 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    func presentOAuthProxyEditor(id: UUID) {
+        guard let profile = snapshot.oauthProfiles.first(where: { $0.id == id }) else { return }
+        proxyEditPromptState = ProxyEditPromptState(
+            target: .oauth(id),
+            title: "OAuth Proxy",
+            subtitle: profile.displayName,
+            proxyURL: profile.proxyURL ?? ""
+        )
+    }
+
+    func saveOAuthProxy() async {
+        guard let prompt = proxyEditPromptState else { return }
+        guard case .oauth(let id) = prompt.target else { return }
+        let proxyURL = prompt.proxyURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        proxyEditPromptState = nil
+        await performMutation { [self] in
+            try await self.service.setOAuthProxy(id: id, proxyURL: proxyURL.isEmpty ? nil : proxyURL)
+        }
+    }
+
     func setProvider(id: String, isEnabled: Bool) async {
         await performMutation { [self] in
             try await self.service.setProvider(id: id, isEnabled: isEnabled)
@@ -189,6 +210,26 @@ final class AppViewModel: ObservableObject {
                 return updatedModel
             }
             return updated
+        }
+    }
+
+    func presentProviderProxyEditor(stableKey: String) {
+        guard let provider = snapshot.providers.first(where: { $0.stableKey == stableKey }) else { return }
+        proxyEditPromptState = ProxyEditPromptState(
+            target: .provider(stableKey),
+            title: "Provider Proxy",
+            subtitle: provider.name,
+            proxyURL: provider.proxyURL ?? ""
+        )
+    }
+
+    func saveProviderProxy() async {
+        guard let prompt = proxyEditPromptState else { return }
+        guard case .provider(let stableKey) = prompt.target else { return }
+        let proxyURL = prompt.proxyURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        proxyEditPromptState = nil
+        await performMutation { [self] in
+            try await self.service.setProviderProxy(stableKey: stableKey, proxyURL: proxyURL.isEmpty ? nil : proxyURL)
         }
     }
 

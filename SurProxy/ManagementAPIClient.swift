@@ -35,6 +35,7 @@ struct ManagementAuthFile {
     let nextRetryAfter: String?
     let idToken: [String: String]?
     let fields: [String: String]?
+    let proxyURL: String?
 }
 
 struct ManagementOAuthStartResponse: Decodable {
@@ -72,6 +73,8 @@ struct ManagementProviderEntry {
     let name: String?
     let baseURL: String?
     let apiKey: String?
+    let proxyURL: String?
+    let apiKeyEntries: [[String: Any]]
     let headers: [String: String]
     let configuredModels: [ManagementAuthFileModel]
     let rawObject: [String: Any]
@@ -299,6 +302,20 @@ final class ManagementAPIClient {
         )
     }
 
+    func patchAuthFileFields(baseURL: URL, key: String, name: String, fields: [String: Any]) async throws {
+        var payload = fields
+        payload["name"] = name
+        let body = try JSONSerialization.data(withJSONObject: payload)
+        let _: EmptyResponse = try await request(
+            baseURL: baseURL,
+            path: "auth-files/fields",
+            queryItems: [],
+            key: key,
+            method: "PATCH",
+            body: body
+        )
+    }
+
     func fetchOfficialProviderModels(configKey: String, entry: ManagementProviderEntry) async throws -> [ManagementAuthFileModel] {
         guard let baseURLString = entry.baseURL, let baseURL = URL(string: baseURLString) else {
             return []
@@ -516,11 +533,14 @@ final class ManagementAPIClient {
         let configuredModels = rawModels.compactMap(parseProviderModel)
         let apiKeyEntries = object["api-key-entries"] as? [[String: Any]] ?? []
         let apiKey = trimmedStringValue(object["api-key"]) ?? apiKeyEntries.compactMap { trimmedStringValue($0["api-key"]) }.first
+        let proxyURL = trimmedStringValue(object["proxy-url"]) ?? apiKeyEntries.compactMap { trimmedStringValue($0["proxy-url"]) }.first
 
         return ManagementProviderEntry(
             name: name,
             baseURL: baseURL,
             apiKey: apiKey,
+            proxyURL: proxyURL,
+            apiKeyEntries: apiKeyEntries,
             headers: headers,
             configuredModels: configuredModels,
             rawObject: object
@@ -728,7 +748,8 @@ final class ManagementAPIClient {
             lastRefresh: stringValue(payload["last_refresh"]),
             nextRetryAfter: stringValue(payload["next_retry_after"]),
             idToken: stringDictionary(payload["id_token"]),
-            fields: fields
+            fields: fields,
+            proxyURL: stringValue(payload["proxy_url"]) ?? stringValue(fields?["proxy_url"])
         )
     }
 

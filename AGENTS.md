@@ -24,9 +24,11 @@ Important upstream APIs currently used by SurProxy:
 - `/v0/management/config`
 - `/v0/management/config.yaml`
 - `/v0/management/latest-version`
+- `/v0/management/proxy-url`
 - `/v0/management/auth-files`
 - `/v0/management/auth-files/models`
 - `/v0/management/auth-files/status`
+- `/v0/management/auth-files/fields`
 - `/v0/management/api-keys`
 - `/v0/management/model-definitions/:channel`
 - `/v0/management/gemini-api-key`
@@ -94,8 +96,10 @@ Important upstream APIs currently used by SurProxy:
   - `id_token`
   - `priority`
   - `note`
+  - `proxy_url`
 - Fallback source: direct scan of `~/.cli-proxy-api/*.json` when management API returns an empty list or parsing yields no usable auth entries
 - This fallback exists because empty UI state is worse than partial local visibility when the runtime API shape drifts or returns incomplete data
+- OAuth cards can patch per-auth proxy overrides through upstream `PATCH /v0/management/auth-files/fields` using the real `proxy_url` field name
 - For model lists under each OAuth card:
   - primary source: `GET /v0/management/auth-files/models?name=...`
   - secondary source: dynamic probing of `GET /v0/management/model-definitions/:channel`
@@ -253,7 +257,9 @@ Current actions exposed:
 - Login Kiro
 - Login GitHub Copilot
 - toggle auth file active/inactive
+- set or clear a per-OAuth proxy override
 - add provider entries through upstream `config.yaml` management
+- set or clear a per-provider proxy override
 - add, copy, and delete downstream API keys through upstream `/v0/management/api-keys`
 
 Current display behavior:
@@ -263,6 +269,7 @@ Current display behavior:
 - each OAuth card can show copyable model IDs from upstream
 - OAuth cards are rendered in an adaptive multi-column grid based on available window width
 - model lists use a collapsed disclosure style by default to reduce vertical space
+- OAuth cards expose a proxy icon button whose tint changes when a per-auth proxy override is configured
 - provider cards are also rendered in an adaptive grid
 - provider model lists are loaded lazily when a provider disclosure group is expanded
 - provider model toggles render from the provider's selected model set, not from a stale per-row cache bit
@@ -276,12 +283,17 @@ Current display behavior:
 - provider enabled-model state should come from management APIs rather than direct config file reads in the UI layer
 - provider model saves should reread provider state from management APIs immediately after write completion instead of relying on arbitrary delays
 - after provider model saves succeed, the app shows a short-lived floating notice instead of a persistent inline message because the final upstream-visible state may still settle shortly after the write; users can re-expand the model list to refresh on demand
+- provider cards expose a proxy icon button whose tint changes when a per-provider proxy override is configured
+- the main toolbar has a force-refresh button in the top-right that reloads the latest management snapshot into the UI under the global loading overlay
 - API Keys are managed as a plain upstream string list; when appending a key through `PATCH /v0/management/api-keys`, the request must include both `old` and `new` because upstream rejects a payload that only includes `new`
 
 ### Provider mutation details
 
 - `openai-compatibility`, `claude-api-key`, `codex-api-key`, and `vertex-api-key` provider model saves currently use per-entry `PATCH`
 - `gemini-api-key` still uses grouped `PUT` for model changes because upstream patch support does not expose equivalent `models` behavior there
+- provider proxy writes follow upstream config semantics:
+  - `gemini-api-key`, `claude-api-key`, `codex-api-key`, and `vertex-api-key` patch per-entry `proxy-url`
+  - `openai-compatibility` does not expose top-level `proxy-url`; its effective proxy override lives in `api-key-entries[].proxy-url`
 - after provider writes complete, SurProxy refreshes provider state from management APIs and then refreshes the whole app snapshot
 - UI mutations use a global loading overlay while API calls are in flight
 

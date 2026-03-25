@@ -64,8 +64,10 @@ Important behavior:
 
 - SurProxy does not implement OAuth itself. It delegates provider login and auth status to `CLIProxyAPIPlus`.
 - SurProxy uses the management API as the primary integration surface.
+- The main toolbar now includes a top-right force-refresh button that reloads the latest management snapshot under the global loading overlay.
 - For auth files, SurProxy now parses the real `CLIProxyAPIPlus` `GET /v0/management/auth-files` response shape based on upstream source.
 - If the management API returns an empty auth list or the response cannot be interpreted, SurProxy falls back to scanning `~/.cli-proxy-api/*.json` directly so the UI does not collapse to an empty state.
+- OAuth cards can set or clear a per-auth proxy override using the upstream auth-file field patch path; the proxy icon turns blue when an override is present.
 - SurProxy preserves existing provider configuration in its app-managed `config.yaml` and only upserts the runtime fields it must own.
 - SurProxy health checks now avoid sending `GET /v0/management/config` before `127.0.0.1:8787` is actually listening, which prevents noisy early `NSURLErrorDomain Code=-1004` failures during startup.
 - For models, SurProxy first uses `GET /v0/management/auth-files/models?name=...` and then does a dynamic channel probe against `GET /v0/management/model-definitions/:channel` using auth-provided identifiers rather than a hardcoded provider-to-channel table.
@@ -76,6 +78,7 @@ Important behavior:
 - Deprecated provider models that still exist in configured `models` but no longer appear in the remote provider catalog remain visible in the list and are marked with an orange `Deprecated` badge.
 - Saving provider model changes now writes back upstream configuration and then immediately rereads provider state from management APIs so the UI reflects the real saved state.
 - Provider model save strategy currently uses per-entry `PATCH` for `openai-compatibility`, `claude-api-key`, `codex-api-key`, and `vertex-api-key`; `gemini-api-key` still uses grouped `PUT` because upstream patch support for `models` is not available there.
+- Provider cards can now set or clear per-provider proxy overrides from a proxy icon. For `gemini-api-key`, `claude-api-key`, `codex-api-key`, and `vertex-api-key`, SurProxy patches the entry `proxy-url`. For `openai-compatibility`, SurProxy updates `api-key-entries[].proxy-url` because that is where upstream stores the effective override.
 - The UI shows a global loading overlay during management API mutations so users do not continue interacting with stale state while writes are in flight.
 - After provider model saves finish, SurProxy now shows a short-lived floating notice instead of a persistent message because upstream state can still take a few seconds to settle; users can re-expand the model list to force a refresh.
 
@@ -84,9 +87,11 @@ Important behavior:
 - `/v0/management/config`
 - `/v0/management/config.yaml`
 - `/v0/management/latest-version`
+- `/v0/management/proxy-url`
 - `/v0/management/auth-files`
 - `/v0/management/auth-files/models`
 - `/v0/management/auth-files/status`
+- `/v0/management/auth-files/fields`
 - `/v0/management/api-keys`
 - `/v0/management/model-definitions/:channel`
 - `/v0/management/gemini-api-key`

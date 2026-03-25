@@ -11,9 +11,11 @@ protocol ProxyServicing {
     func loadSnapshot() async throws -> ProxyStatusSnapshot
     func setRuntimeState(_ state: ProxyRuntimeState) async throws -> ProxyStatusSnapshot
     func setOAuthProfile(id: UUID, isActive: Bool) async throws -> ProxyStatusSnapshot
+    func setOAuthProxy(id: UUID, proxyURL: String?) async throws -> ProxyStatusSnapshot
     func deleteOAuthProfile(id: UUID) async throws -> ProxyStatusSnapshot
     func setProvider(id: String, isEnabled: Bool) async throws -> ProxyStatusSnapshot
     func setProviderModel(providerID: String, modelID: String, isEnabled: Bool) async throws -> ProxyStatusSnapshot
+    func setProviderProxy(stableKey: String, proxyURL: String?) async throws -> ProxyStatusSnapshot
     func loadProviderModels(stableKey: String) async throws -> [ProviderModel]
     func saveProviderModelStates(_ changes: [String: Set<String>]) async throws -> ProxyStatusSnapshot
     func renameProvider(stableKey: String, newName: String) async throws -> ProxyStatusSnapshot
@@ -125,6 +127,23 @@ final class ProxyService: ProxyServicing {
         return try await refreshSnapshot()
     }
 
+    func setOAuthProxy(id: UUID, proxyURL: String?) async throws -> ProxyStatusSnapshot {
+        try prepareRuntime()
+        try await ensureManagementReady()
+        guard let profile = snapshot.oauthProfiles.first(where: { $0.id == id }) else {
+            return snapshot
+        }
+
+        let trimmedProxyURL = proxyURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        try await apiClient.patchAuthFileFields(
+            baseURL: managementBaseURL(),
+            key: manifest.managementKey,
+            name: profile.fileName,
+            fields: ["proxy_url": trimmedProxyURL]
+        )
+        return try await refreshSnapshot()
+    }
+
     func setProvider(id: String, isEnabled: Bool) async throws -> ProxyStatusSnapshot {
         guard let provider = snapshot.providers.first(where: { $0.id == id }) else {
             return snapshot
@@ -141,6 +160,68 @@ final class ProxyService: ProxyServicing {
         _ = modelID
         _ = isEnabled
         return snapshot
+    }
+
+    func setProviderProxy(stableKey: String, proxyURL: String?) async throws -> ProxyStatusSnapshot {
+        try prepareRuntime()
+        try await ensureManagementReady()
+
+        guard let provider = snapshot.providers.first(where: { $0.stableKey == stableKey }) else {
+            return snapshot
+        }
+
+        let trimmedProxyURL = proxyURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let baseURL = managementBaseURL()
+        let key = manifest.managementKey
+
+        if provider.configKey == "openai-compatibility" {
+            let entries = try await apiClient.providerEntries(
+                baseURL: baseURL,
+                key: key,
+                configKey: provider.configKey
+            )
+            guard provider.entryIndex >= 0, provider.entryIndex < entries.count else {
+                return snapshot
+            }
+
+            var raw = entries[provider.entryIndex].rawObject
+            var apiKeyEntries = entries[provider.entryIndex].apiKeyEntries
+            if apiKeyEntries.isEmpty {
+                if let apiKey = entries[provider.entryIndex].apiKey, !apiKey.isEmpty {
+                    apiKeyEntries = [["api-key": apiKey]]
+                } else {
+                    throw NSError(
+                        domain: "SurProxy.Provider",
+                        code: 8,
+                        userInfo: [NSLocalizedDescriptionKey: "This OpenAI compatibility entry does not expose an API key entry to attach a proxy override."]
+                    )
+                }
+            }
+
+            var firstAPIKeyEntry = apiKeyEntries[0]
+            firstAPIKeyEntry["proxy-url"] = trimmedProxyURL
+            apiKeyEntries[0] = firstAPIKeyEntry
+            raw["api-key-entries"] = apiKeyEntries
+
+            var allRawEntries = entries.map(\.rawObject)
+            allRawEntries[provider.entryIndex] = raw
+            try await apiClient.putProviderEntries(
+                baseURL: baseURL,
+                key: key,
+                configKey: provider.configKey,
+                entries: allRawEntries
+            )
+        } else {
+            try await apiClient.patchProviderEntry(
+                baseURL: baseURL,
+                key: key,
+                configKey: provider.configKey,
+                index: provider.entryIndex,
+                value: ["proxy-url": trimmedProxyURL]
+            )
+        }
+
+        return try await refreshSnapshot()
     }
 
     func loadProviderModels(stableKey: String) async throws -> [ProviderModel] {
@@ -204,6 +285,8 @@ final class ProxyService: ProxyServicing {
                         name: name,
                         baseURL: baseURL,
                         apiKey: apiKey,
+                        proxyURL: entries[provider.entryIndex].proxyURL,
+                        apiKeyEntries: entries[provider.entryIndex].apiKeyEntries,
                         headers: headers,
                         configuredModels: Self.providerConfiguredModels(from: selectedModels),
                         rawObject: raw
@@ -301,6 +384,8 @@ final class ProxyService: ProxyServicing {
             name: trimmedName,
             baseURL: entry.baseURL,
             apiKey: entry.apiKey,
+            proxyURL: entry.proxyURL,
+            apiKeyEntries: entry.apiKeyEntries,
             headers: entry.headers,
             configuredModels: entry.configuredModels,
             rawObject: raw
@@ -660,6 +745,7 @@ final class ProxyService: ProxyServicing {
                         canRename: item.configKey == "openai-compatibility",
                         configKey: item.configKey,
                         entryIndex: index,
+                        proxyURL: entry.proxyURL,
                         selectedModels: Set(effectiveConfiguredModels.map(\.id)),
                         models: cachedModels
                     )
@@ -807,6 +893,7 @@ final class ProxyService: ProxyServicing {
             email: email,
             account: account,
             note: trimmed(file.note),
+            proxyURL: trimmed(file.proxyURL) ?? trimmed(file.fields?["proxy_url"]) ?? trimmed(file.fields?["proxy-url"]),
             models: []
         )
     }
@@ -908,6 +995,7 @@ final class ProxyService: ProxyServicing {
                     canRename: key == "openai-compatibility",
                     configKey: key,
                     entryIndex: 0,
+                    proxyURL: nil,
                     selectedModels: [],
                     models: []
                 )
@@ -979,6 +1067,7 @@ final class ProxyService: ProxyServicing {
                     canRename: key == "openai-compatibility",
                     configKey: key,
                     entryIndex: 0,
+                    proxyURL: nil,
                     selectedModels: [],
                     models: []
                 )
@@ -1113,7 +1202,8 @@ final class ProxyService: ProxyServicing {
                     lastRefresh: nil,
                     nextRetryAfter: nil,
                     idToken: nil,
-                    fields: nil
+                    fields: nil,
+                    proxyURL: stringFromDisk(object["proxy_url"]) ?? stringFromDisk(object["proxy-url"])
                 )
                 return mapAuthFile(authFile)
             }
